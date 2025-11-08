@@ -72,7 +72,7 @@ jobs:
 
       # --- Install dependencies ---
       - name: Install multilib (Linux x86_32)
-        if: ${{ matrix.platform == 'linux' && matrix.arch == 'x86_32' }}
+        if: ${{ matrix.platform == 'linux'}}
         run: |
           sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
 
