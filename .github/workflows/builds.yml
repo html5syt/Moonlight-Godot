@@ -1,107 +1,149 @@
-name: Build GDExtension
+name: Build Moonlight GDExtension
+
 on:
-  workflow_call:
   push:
+    branches: [ "master" ]
   pull_request:
-  merge_group:
+    branches: [ "master" ]
+  workflow_dispatch:
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        # A build is made for every possible combination of parameters
-        # You can add or remove entries from the arrays of each parameter to customize which builds you want to run
-        # See https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/running-variations-of-jobs-in-a-workflow
-        target:
-          [
-            { platform: linux, arch: x86_64, os: ubuntu-22.04 },
-            { platform: linux, arch: x86_32, os: ubuntu-22.04 },
-            { platform: linux, arch: arm64, os: ubuntu-22.04-arm },
-            { platform: linux, arch: arm32, os: ubuntu-22.04-arm },
-            { platform: windows, arch: x86_64, os: windows-latest },
-            { platform: windows, arch: x86_32, os: windows-latest },
-            { platform: windows, arch: arm64, os: windows-latest },
-            { platform: macos, arch: universal, os: macos-latest },
-            { platform: android, arch: x86_64, os: ubuntu-22.04 },
-            { platform: android, arch: x86_32, os: ubuntu-22.04 },
-            { platform: android, arch: arm64, os: ubuntu-22.04 },
-            { platform: android, arch: arm32, os: ubuntu-22.04 },
-            { platform: ios, arch: arm64, os: macos-latest },
-            { platform: web, arch: wasm32, os: ubuntu-22.04 },
-          ]
-        target-type: [template_debug, template_release]
-        float-precision: [single, double]
+        include:
+          # Linux
+          - platform: linux
+            arch: x86_64
+            os: ubuntu-22.04
+            use_mbedtls: false
+          - platform: linux
+            arch: x86_64
+            os: ubuntu-22.04
+            use_mbedtls: true
+          - platform: linux
+            arch: arm64
+            os: ubuntu-22.04-arm
+            use_mbedtls: false
 
-    runs-on: ${{ matrix.target.os }}
+          # Windows
+          - platform: windows
+            arch: x86_64
+            os: windows-latest
+            use_mbedtls: false
+          - platform: windows
+            arch: x86_64
+            os: windows-latest
+            use_mbedtls: true
+
+          # macOS
+          - platform: macos
+            arch: universal
+            os: macos-latest
+            use_mbedtls: false
+          - platform: macos
+            arch: universal
+            os: macos-latest
+            use_mbedtls: true
+
+          # Android (optional)
+          - platform: android
+            arch: arm64
+            os: ubuntu-22.04
+            use_mbedtls: false
+
+          # iOS (optional)
+          - platform: ios
+            arch: arm64
+            os: macos-latest
+            use_mbedtls: false
+
+        target-type: [template_debug, template_release]
+        float-precision: [single]
+
+    runs-on: ${{ matrix.os }}
+
     steps:
-      # Clone this repository
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
 
-      # Lint
-      #- name: Setup clang-format
-      #  shell: bash
-      #  run: |
-      #    python -m pip install clang-format
-      #- name: Run clang-format
-      #  shell: bash
-      #  run: |
-      #    clang-format src/** --dry-run --Werror
-
-      # Add linux x86_32 toolchain
-      - name: Install multilib support
-        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_32' }}
+      # --- Install dependencies ---
+      - name: Install multilib (Linux x86_32)
+        if: ${{ matrix.platform == 'linux' && matrix.arch == 'x86_32' }}
         run: |
           sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
 
-      # Setup dependencies
+      - name: Install MbedTLS (if needed)
+        if: ${{ matrix.use_mbedtls == true && matrix.platform != 'windows' }}
+        run: |
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            sudo apt-get update && sudo apt-get install -y libmbedtls-dev
+          elif [[ "${{ matrix.platform }}" == "macos" ]]; then
+            brew install mbedtls
+          fi
+
+      - name: Download OpenSSL for Windows (non-MbedTLS)
+        if: ${{ matrix.platform == 'windows' && matrix.use_mbedtls == false }}
+        shell: pwsh
+        run: |
+          $url = "https://slproweb.com/download/Win64OpenSSL-1_1_1w.exe"
+          $output = "openssl-installer.exe"
+          Invoke-WebRequest -Uri $url -OutFile $output
+          Start-Process -FilePath $output -ArgumentList "/silent", "/verysilent", "/sp-", "/suppressmsgboxes" -Wait
+          echo "OPENSSL_ROOT=C:\Program Files\OpenSSL-Win64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+
+      # --- Setup godot-cpp ---
       - name: Setup godot-cpp
-        uses: ./godot-cpp/.github/actions/setup-godot-cpp
+        uses: ./src/lib/godot-cpp/.github/actions/setup-godot-cpp
         with:
-          platform: ${{ matrix.target.platform }}
+          platform: ${{ matrix.platform }}
           em-version: 3.1.62
 
-      # Build GDExtension (with caches)
-
+      # --- Cache SCons ---
       - name: Restore .scons_cache
-        uses: ./godot-cpp/.github/actions/godot-cache-restore
+        uses: ./src/lib/godot-cpp/.github/actions/godot-cache-restore
         with:
           scons-cache: ${{ github.workspace }}/.scons-cache/
-          cache-name: ${{ matrix.target.platform }}_${{ matrix.target.arch }}_${{ matrix.float-precision }}_${{ matrix.target-type }}
+          cache-name: ${{ matrix.platform }}_${{ matrix.arch }}_${{ matrix.float-precision }}_${{ matrix.target-type }}_${{ matrix.use_mbedtls }}
 
-      - name: Build GDExtension Debug Build
+      # --- Build ---
+      - name: Build GDExtension
         shell: sh
         env:
           SCONS_CACHE: ${{ github.workspace }}/.scons-cache/
+          OPENSSL: ${{ (matrix.platform == 'windows' && matrix.use_mbedtls == false) && 'C:\\Program Files\\OpenSSL-Win64' || '' }}
         run: |
-          scons target=${{ matrix.target-type }} platform=${{ matrix.target.platform }} arch=${{ matrix.target.arch }} precision=${{ matrix.float-precision }}
+          scons \
+            target=${{ matrix.target-type }} \
+            platform=${{ matrix.platform }} \
+            arch=${{ matrix.arch }} \
+            precision=${{ matrix.float-precision }} \
+            use_mbedtls=${{ matrix.use_mbedtls }}
 
+      # --- Save cache ---
       - name: Save .scons_cache
-        uses: ./godot-cpp/.github/actions/godot-cache-save
+        uses: ./src/lib/godot-cpp/.github/actions/godot-cache-save
         with:
           scons-cache: ${{ github.workspace }}/.scons-cache/
-          cache-name: ${{ matrix.target.platform }}_${{ matrix.target.arch }}_${{ matrix.float-precision }}_${{ matrix.target-type }}
+          cache-name: ${{ matrix.platform }}_${{ matrix.arch }}_${{ matrix.float-precision }}_${{ matrix.target-type }}_${{ matrix.use_mbedtls }}
 
-      # Clean up compilation files
-      - name: Windows - Delete compilation files
-        if: ${{ matrix.target.platform == 'windows' }}
+      # --- Cleanup Windows artifacts ---
+      - name: Windows - Delete extra files
+        if: ${{ matrix.platform == 'windows' }}
         shell: pwsh
         run: |
-          Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force
+          Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force -ErrorAction SilentlyContinue
 
-      # Upload the build
+      # --- Upload artifact ---
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: godot-cpp-template-${{ matrix.target.platform }}-${{ matrix.target.arch }}-${{ matrix.float-precision }}-${{ matrix.target-type }}
-          path: |
-            ${{ github.workspace }}/bin/**
+          name: moonlight-godot-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.target-type }}-${{ matrix.use_mbedtls }}
+          path: ${{ github.workspace }}/bin/**
 
-  # Merges all the build artifacts together into a single godot-cpp-template artifact.
-  # If you comment out this step, all the builds will be uploaded individually.
   merge:
     runs-on: ubuntu-22.04
     needs: build
@@ -109,6 +151,6 @@ jobs:
       - name: Merge Artifacts
         uses: actions/upload-artifact/merge@v4
         with:
-          name: godot-cpp-template
-          pattern: godot-cpp-template-*
+          name: moonlight-godot-all
+          pattern: moonlight-godot-*
           delete-merged: true
