@@ -5,8 +5,11 @@ import sys
 from methods import print_error
 
 
-libname = "EXTENSION-NAME"
+libname = "Moonlight-Godot"
 projectdir = "demo"
+
+godot_cpp_path = "src/lib/godot-cpp"
+moonlight_common_c_path = "src/lib/moonlight-common-c"
 
 localEnv = Environment(tools=["default"], PLATFORM="")
 
@@ -28,14 +31,14 @@ Help(opts.GenerateHelpText(localEnv))
 
 env = localEnv.Clone()
 
-if not (os.path.isdir("godot-cpp") and os.listdir("godot-cpp")):
-    print_error("""godot-cpp is not available within this folder, as Git submodules haven't been initialized.
-Run the following command to download godot-cpp:
+if (not (os.path.isdir(godot_cpp_path) and os.listdir(godot_cpp_path))) or (not (os.path.isdir(moonlight_common_c_path) and os.listdir(moonlight_common_c_path))):
+    print_error("""godot-cpp and moonlight-common-c is not available within this folder, as Git submodules haven't been initialized.
+Run the following command to download godot-cpp and moonlight-common-c:
 
     git submodule update --init --recursive""")
     sys.exit(1)
 
-env = SConscript("godot-cpp/SConstruct", {"env": env, "customs": customs})
+env = SConscript(godot_cpp_path + "/SConstruct", {"env": env, "customs": customs})
 
 env.Append(CPPPATH=["src/"])
 
