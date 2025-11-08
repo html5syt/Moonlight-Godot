@@ -47,11 +47,11 @@ jobs:
             os: macos-latest
             use_mbedtls: true
 
-          # Android (optional)
-          - platform: android
-            arch: arm64
-            os: ubuntu-22.04
-            use_mbedtls: false
+          # # Android (optional)
+          # - platform: android
+          #   arch: arm64
+          #   os: ubuntu-22.04
+          #   use_mbedtls: false
 
           # # iOS (optional)
           # - platform: ios
@@ -60,7 +60,7 @@ jobs:
           #   use_mbedtls: false
 
         target-type: [template_debug, template_release]
-        float-precision: [single]
+        float-precision: [single, double]
 
     runs-on: ${{ matrix.os }}
 
@@ -72,6 +72,7 @@ jobs:
 
       # --- Install dependencies ---
       - name: Install multilib (Linux x86_32)
+        if: ${{ matrix.platform == 'linux' && matrix.arch == 'x86_32' }}
         run: |
           sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
 
