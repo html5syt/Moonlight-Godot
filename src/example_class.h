@@ -17,4 +17,7 @@ public:
 	~ExampleClass() override = default;
 
 	void print_type(const Variant &p_variant) const;
+	void print_helloworld() const;
+	// long long fibonacci(int n) const;
+	void print_fibonacci(int n) const;
 };
