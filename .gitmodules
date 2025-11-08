@@ -1,4 +1,7 @@
-[submodule "godot-cpp"]
-	path = godot-cpp
-	url = https://github.com/godotengine/godot-cpp.git
-	branch = 4.3
+[submodule "src/lib/godot-cpp"]
+	path = src/lib/godot-cpp
+	url = https://github.com/godotengine/godot-cpp
+	branch = 4.5
+[submodule "src/lib/moonlight-common-c"]
+	path = src/lib/moonlight-common-c
+	url = https://github.com/moonlight-stream/moonlight-common-c
