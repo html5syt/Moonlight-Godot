@@ -182,7 +182,7 @@ else:
     if env["platform"] == "windows":
         # 支持通过 OPENSSL=... 指定路径
         # print("WARN：使用预先配置的openssl路径，请在GitHub actions中另外配置！！！")
-        openssl_root = env.get("openssl", "D:\CodingENV\OpenSSL-Win64")
+        openssl_root = env.get("openssl", "D:\\CodingENV\\OpenSSL-Win64")
         # openssl_root = 
         if not openssl_root:
             print_error("OpenSSL path not specified for Windows. Please provide OPENSSL=/path/to/OpenSSL-Win64")
