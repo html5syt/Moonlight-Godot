@@ -29,7 +29,7 @@ jobs:
         float-precision: [single]
 
         # 排除不支持 mbedtls 的组合（例如 Windows + mbedtls 暂不支持？按需调整）
-        exclude:
+        # exclude:
           # 示例：若 Windows 不支持 MbedTLS 构建，可排除
           # - target: { platform: windows, arch: x86_64, os: windows-latest }
           #   use_mbedtls: true
