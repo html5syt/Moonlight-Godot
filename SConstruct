@@ -136,7 +136,7 @@ if env["platform"] == "windows":
         ])
         ml_env.Append(LIBS=["ws2_32", "winmm"])
 else:
-    ml_env.Append(CCFLAGS=["-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror"])
+    ml_env.Append(CCFLAGS=["-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-D_POSIX_C_SOURCE=200809L"])
     # 可选：启用 -fanalyzer（需 GCC >= 10）
     # if "gcc" in ml_env["CC"] and env.get("code_analysis", False):
     #     ml_env.Append(CCFLAGS=["-fanalyzer"])

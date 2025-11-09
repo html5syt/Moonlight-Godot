@@ -63,7 +63,7 @@ jobs:
         if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
         shell: pwsh
         run: |
-          $url = "https://slproweb.com/download/Win64OpenSSL-1_1_1w.exe"
+          $url = "https://slproweb.com/download/Win64OpenSSL-3_6_0.exe"
           $output = "openssl-installer.exe"
           Invoke-WebRequest -Uri $url -OutFile $output
           Start-Process -FilePath $output -ArgumentList "/silent", "/verysilent", "/sp-", "/suppressmsgboxes" -Wait
@@ -75,7 +75,7 @@ jobs:
         shell: pwsh
         run: |
           echo "OPENSSL_ROOT=$env:OPENSSL_ROOT"
-          tree /F $env:OPENSSL_ROOT
+          tree /F C:\Program Files\OpenSSL-Win64
 
       # --- Setup godot-cpp ---
       - name: Setup godot-cpp
