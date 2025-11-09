@@ -31,7 +31,7 @@ jobs:
           ]
         use_mbedtls: [false, true]
         target-type: [template_debug, template_release]
-        float-precision: [double]
+        float-precision: [single, double]
 
     runs-on: ${{ matrix.target.os }}
 

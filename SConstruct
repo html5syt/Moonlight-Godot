@@ -6,6 +6,12 @@ from pathlib import Path
 
 from methods import print_error
 
+import io
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+
 # === 插件配置 ===
 libname = "Moonlight-Godot"        # ← 修改为你想要的插件名
 projectdir = "demo"          # demo 项目目录（用于复制）
