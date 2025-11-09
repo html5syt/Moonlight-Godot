@@ -75,6 +75,8 @@ jobs:
       # --- Build with SCons (which calls CMake internally) ---
       - name: Build GDExtension
         shell: sh
+        env:
+            OPENSSL_ROOT_DIR: ${{ (matrix.target.platform == 'windows' && matrix.use_mbedtls == false) && 'C:\\Program Files\\OpenSSL-Win64' || '' }}
         run: |
           scons \
             target=${{ matrix.target-type }} \
