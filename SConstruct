@@ -76,6 +76,41 @@ ret = subprocess.run(["cmake", "--build", moonlight_build_dir, "--config", build
 if ret.returncode != 0:
     sys.exit(f"CMake build failed with code {ret.returncode}")
 
+
+# === 打印目录树 ===
+def print_tree(path, include_file=None, prefix=""):
+    # 获取当前目录下的所有文件和文件夹
+    items = os.listdir(path)
+    
+    # 过滤：只保留目录和包含指定文件名的文件
+    filtered_items = []
+    for item in items:
+        item_path = os.path.join(path, item)
+        if os.path.isdir(item_path):
+            # 总是包含目录
+            filtered_items.append(item)
+        elif include_file and include_file in item:
+            # 包含指定文件名的文件
+            filtered_items.append(item)
+    
+    # 遍历过滤后的项目
+    for index, item in enumerate(filtered_items):
+        is_last = index == len(filtered_items) - 1
+        # 判断是否为最后一个节点，选择不同的前缀符号
+        connector = "└──" if is_last else "├──"
+        print(f"{prefix}{connector} {item}")
+        
+        # 构造新的路径
+        new_path = os.path.join(path, item)
+        if os.path.isdir(new_path):
+            # 更新前缀并递归调用
+            new_prefix = prefix + ("    " if is_last else "│   ")
+            print_tree(new_path, include_file, new_prefix)
+
+# 使用示例：打印当前目录的树状结构，但包含"test"的文件也会显示
+print_tree("./build", include_file="moonlight-common-c")
+
+
 # === 确定 moonlight 库路径 ===
 if platform == "windows":
     moonlight_lib_dir = os.path.join(moonlight_build_dir, build_type)  # e.g., Debug/
