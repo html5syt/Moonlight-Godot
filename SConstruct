@@ -173,43 +173,43 @@ ml_env.Append(CPPPATH=[
 # ==============================
 # 处理 USE_MBEDTLS vs OpenSSL（增强版，支持 Windows 路径）
 # ==============================
-use_mbedtls = os.environ.get("use_mbedtls", False)
-if use_mbedtls:
-    ml_env.Append(CPPDEFINES=["USE_MBEDTLS"])
-    ml_env.Append(LIBS=["mbedcrypto"])
+# use_mbedtls = os.environ.get("use_mbedtls", False)
+# if use_mbedtls:
+#     ml_env.Append(CPPDEFINES=["USE_MBEDTLS"])
+#     ml_env.Append(LIBS=["mbedcrypto"])
+# else:
+# OpenSSL 分支
+if env["platform"] == "windows":
+    # 支持通过 OPENSSL=... 指定路径
+    # print("WARN：使用预先配置的openssl路径，请在GitHub actions中另外配置！！！")
+    openssl_root = os.environ.get("OPENSSL", "C:\\Program Files\\OpenSSL-Win64")
+    # openssl_root = 
+    if not openssl_root:
+        print_error("OpenSSL path not specified for Windows. Please provide OPENSSL=/path/to/OpenSSL-Win64")
+        sys.exit(1)
+
+    openssl_inc = os.path.join(openssl_root, "include")
+    openssl_lib = os.path.join(openssl_root, "lib")
+
+    if not os.path.exists(os.path.join(openssl_inc, "openssl", "evp.h")):
+        print_error(f"openssl/evp.h not found in {openssl_inc}")
+        sys.exit(1)
+
+    ml_env.Append(CPPPATH=[openssl_inc])
+    ml_env.Append(LIBPATH=[openssl_lib])
+    ml_env.Append(LIBS=["libcrypto"])  # 或 "libcrypto_static"，取决于你用的版本
 else:
-    # OpenSSL 分支
-    if env["platform"] == "windows":
-        # 支持通过 OPENSSL=... 指定路径
-        # print("WARN：使用预先配置的openssl路径，请在GitHub actions中另外配置！！！")
-        openssl_root = os.environ.get("OPENSSL", "C:\\Program Files\\OpenSSL-Win64")
-        # openssl_root = 
-        if not openssl_root:
-            print_error("OpenSSL path not specified for Windows. Please provide OPENSSL=/path/to/OpenSSL-Win64")
-            sys.exit(1)
-
-        openssl_inc = os.path.join(openssl_root, "include")
-        openssl_lib = os.path.join(openssl_root, "lib")
-
-        if not os.path.exists(os.path.join(openssl_inc, "openssl", "evp.h")):
-            print_error(f"openssl/evp.h not found in {openssl_inc}")
-            sys.exit(1)
-
-        ml_env.Append(CPPPATH=[openssl_inc])
-        ml_env.Append(LIBPATH=[openssl_lib])
-        ml_env.Append(LIBS=["libcrypto"])  # 或 "libcrypto_static"，取决于你用的版本
-    else:
-        # Linux/macOS：尝试 pkg-config
-        try:
-            env.ParseConfig("pkg-config --cflags --libs libcrypto")
-            ml_env.Append(CPPPATH=env["CPPPATH"])
-            ml_env.Append(LIBPATH=env["LIBPATH"])
-            ml_env.Append(LIBS=["crypto"])
-        except Exception:
-            # fallback
-            ml_env.Append(CPPPATH=["/usr/include", "/usr/local/include"])
-            ml_env.Append(LIBPATH=["/usr/lib", "/usr/local/lib"])
-            ml_env.Append(LIBS=["crypto"])
+    # Linux/macOS：尝试 pkg-config
+    try:
+        env.ParseConfig("pkg-config --cflags --libs libcrypto")
+        ml_env.Append(CPPPATH=env["CPPPATH"])
+        ml_env.Append(LIBPATH=env["LIBPATH"])
+        ml_env.Append(LIBS=["crypto"])
+    except Exception:
+        # fallback
+        ml_env.Append(CPPPATH=["/usr/include", "/usr/local/include"])
+        ml_env.Append(LIBPATH=["/usr/lib", "/usr/local/lib"])
+        ml_env.Append(LIBS=["crypto"])
 
 # 构建静态库
 moonlight_static_lib = ml_env.StaticLibrary(
