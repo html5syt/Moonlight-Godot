@@ -75,6 +75,7 @@ jobs:
 
       # --- Build with SCons (which calls CMake internally) ---
       - name: Build GDExtension
+        if: ${{ matrix.target.platform != 'windows'}}
         shell: sh
         run: |
           scons \
