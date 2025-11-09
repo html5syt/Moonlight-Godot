@@ -15,23 +15,26 @@ jobs:
         target:
           [
             { platform: linux, arch: x86_64, os: ubuntu-22.04 },
-            { platform: linux, arch: x86_32, os: ubuntu-22.04 },
+            # { platform: linux, arch: x86_32, os: ubuntu-22.04 },
             { platform: linux, arch: arm64, os: ubuntu-22.04-arm },
-            { platform: linux, arch: arm32, os: ubuntu-22.04-arm },
+            # { platform: linux, arch: arm32, os: ubuntu-22.04-arm },
             { platform: windows, arch: x86_64, os: windows-latest },
-            { platform: windows, arch: x86_32, os: windows-latest },
+            # { platform: windows, arch: x86_32, os: windows-latest },
             { platform: windows, arch: arm64, os: windows-latest },
             { platform: macos, arch: universal, os: macos-latest },
             { platform: android, arch: x86_64, os: ubuntu-22.04 },
-            { platform: android, arch: x86_32, os: ubuntu-22.04 },
+            # { platform: android, arch: x86_32, os: ubuntu-22.04 },
             { platform: android, arch: arm64, os: ubuntu-22.04 },
-            { platform: android, arch: arm32, os: ubuntu-22.04 },
+            # { platform: android, arch: arm32, os: ubuntu-22.04 },
             { platform: ios, arch: arm64, os: macos-latest },
             { platform: web, arch: wasm32, os: ubuntu-22.04 },
           ]
         use_mbedtls: [false, true]
         target-type: [template_debug, template_release]
         float-precision: [single, double]
+        exclude:
+          - platform: windows
+            use_mbedtls: true
 
     runs-on: ${{ matrix.target.os }}
 
@@ -50,6 +53,11 @@ jobs:
           elif [[ "${{ matrix.target.platform }}" == "macos" ]]; then
             brew install mbedtls
           fi
+      # Add linux x86_32 toolchain
+      - name: Install multilib support
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_32' }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
 
       - name: Install OpenSSL for Windows
         if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
