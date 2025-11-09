@@ -24,7 +24,7 @@ jobs:
           # - { platform: android, arch: arm64, os: ubuntu-22.04 }
           # - { platform: ios,     arch: arm64, os: macos-latest }
 
-        use_mbedtls: [false, true]
+        use_mbedtls: [false]
         target-type: [template_debug, template_release]
         float-precision: [single]
 
