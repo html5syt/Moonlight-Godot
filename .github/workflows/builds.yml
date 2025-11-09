@@ -12,57 +12,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
+        target:
           # Linux
-          - platform: linux
-            arch: x86_64
-            os: ubuntu-22.04
-            use_mbedtls: false
-          - platform: linux
-            arch: x86_64
-            os: ubuntu-22.04
-            use_mbedtls: true
-          - platform: linux
-            arch: arm64
-            os: ubuntu-22.04-arm
-            use_mbedtls: false
-
+          - { platform: linux,   arch: x86_64, os: ubuntu-22.04 }
+          - { platform: linux,   arch: arm64,  os: ubuntu-22.04-arm }
           # Windows
-          - platform: windows
-            arch: x86_64
-            os: windows-latest
-            use_mbedtls: false
-          - platform: windows
-            arch: x86_64
-            os: windows-latest
-            use_mbedtls: true
-
+          - { platform: windows, arch: x86_64, os: windows-latest }
           # macOS
-          - platform: macos
-            arch: universal
-            os: macos-latest
-            use_mbedtls: false
-          - platform: macos
-            arch: universal
-            os: macos-latest
-            use_mbedtls: true
+          - { platform: macos,   arch: universal, os: macos-latest }
+          # 可选：Android / iOS（当前注释掉）
+          # - { platform: android, arch: arm64, os: ubuntu-22.04 }
+          # - { platform: ios,     arch: arm64, os: macos-latest }
 
-          # # Android (optional)
-          # - platform: android
-          #   arch: arm64
-          #   os: ubuntu-22.04
-          #   use_mbedtls: false
-
-          # # iOS (optional)
-          # - platform: ios
-          #   arch: arm64
-          #   os: macos-latest
-          #   use_mbedtls: false
-
+        use_mbedtls: [false, true]
         target-type: [template_debug, template_release]
         float-precision: [single]
 
-    runs-on: ${{ matrix.os }}
+        # 排除不支持 mbedtls 的组合（例如 Windows + mbedtls 暂不支持？按需调整）
+        # exclude:
+          # 示例：若 Windows 不支持 MbedTLS 构建，可排除
+          # - target: { platform: windows, arch: x86_64, os: windows-latest }
+          #   use_mbedtls: true
+
+    runs-on: ${{ matrix.target.os }}
 
     steps:
       - name: Checkout
@@ -70,23 +42,25 @@ jobs:
         with:
           submodules: recursive
 
-      # --- Install dependencies ---
+      # --- Install multilib for x86_32 (if ever added back) ---
       - name: Install multilib (Linux x86_32)
-        if: ${{ matrix.platform == 'linux' && matrix.arch == 'x86_32' }}
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_32' }}
         run: |
           sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
 
+      # --- Install MbedTLS (non-Windows) ---
       - name: Install MbedTLS (if needed)
-        if: ${{ matrix.use_mbedtls == true && matrix.platform != 'windows' }}
+        if: ${{ matrix.use_mbedtls == true && matrix.target.platform != 'windows' }}
         run: |
-          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+          if [[ "${{ matrix.target.platform }}" == "linux" ]]; then
             sudo apt-get update && sudo apt-get install -y libmbedtls-dev
-          elif [[ "${{ matrix.platform }}" == "macos" ]]; then
+          elif [[ "${{ matrix.target.platform }}" == "macos" ]]; then
             brew install mbedtls
           fi
 
-      - name: Download OpenSSL for Windows (non-MbedTLS)
-        if: ${{ matrix.platform == 'windows' && matrix.use_mbedtls == false }}
+      # --- Install OpenSSL on Windows (when not using MbedTLS) ---
+      - name: Download OpenSSL for Windows
+        if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
         shell: pwsh
         run: |
           $url = "https://slproweb.com/download/Win64OpenSSL-1_1_1w.exe"
@@ -99,27 +73,30 @@ jobs:
       - name: Setup godot-cpp
         uses: ./src/lib/godot-cpp/.github/actions/setup-godot-cpp
         with:
-          platform: ${{ matrix.platform }}
+          platform: ${{ matrix.target.platform }}
           em-version: 3.1.62
 
-      # --- Cache SCons ---
+      # --- Cache ---
       - name: Restore .scons_cache
         uses: ./src/lib/godot-cpp/.github/actions/godot-cache-restore
         with:
           scons-cache: ${{ github.workspace }}/.scons-cache/
-          cache-name: ${{ matrix.platform }}_${{ matrix.arch }}_${{ matrix.float-precision }}_${{ matrix.target-type }}_${{ matrix.use_mbedtls }}
+          cache-name: >-
+            ${{ matrix.target.platform }}_${{ matrix.target.arch }}_
+            ${{ matrix.float-precision }}_${{ matrix.target-type }}_
+            ${{ matrix.use_mbedtls }}
 
       # --- Build ---
       - name: Build GDExtension
         shell: sh
         env:
           SCONS_CACHE: ${{ github.workspace }}/.scons-cache/
-          OPENSSL: ${{ (matrix.platform == 'windows' && matrix.use_mbedtls == false) && 'C:\\Program Files\\OpenSSL-Win64' || '' }}
+          OPENSSL: ${{ (matrix.target.platform == 'windows' && matrix.use_mbedtls == false) && 'C:\\Program Files\\OpenSSL-Win64' || '' }}
         run: |
           scons \
             target=${{ matrix.target-type }} \
-            platform=${{ matrix.platform }} \
-            arch=${{ matrix.arch }} \
+            platform=${{ matrix.target.platform }} \
+            arch=${{ matrix.target.arch }} \
             precision=${{ matrix.float-precision }} \
             use_mbedtls=${{ matrix.use_mbedtls }}
             
@@ -129,11 +106,14 @@ jobs:
         uses: ./src/lib/godot-cpp/.github/actions/godot-cache-save
         with:
           scons-cache: ${{ github.workspace }}/.scons-cache/
-          cache-name: ${{ matrix.platform }}_${{ matrix.arch }}_${{ matrix.float-precision }}_${{ matrix.target-type }}_${{ matrix.use_mbedtls }}
+          cache-name: >-
+            ${{ matrix.target.platform }}_${{ matrix.target.arch }}_
+            ${{ matrix.float-precision }}_${{ matrix.target-type }}_
+            ${{ matrix.use_mbedtls }}
 
-      # --- Cleanup Windows artifacts ---
-      - name: Windows - Delete extra files
-        if: ${{ matrix.platform == 'windows' }}
+      # --- Cleanup Windows extra files ---
+      - name: Windows - Delete extra compilation files
+        if: ${{ matrix.target.platform == 'windows' }}
         shell: pwsh
         run: |
           Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force -ErrorAction SilentlyContinue
@@ -142,7 +122,10 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: moonlight-godot-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.target-type }}-${{ matrix.use_mbedtls }}
+          name: >-
+            moonlight-godot-${{ matrix.target.platform }}-
+            ${{ matrix.target.arch }}-${{ matrix.target-type }}-
+            ${{ matrix.use_mbedtls }}
           path: ${{ github.workspace }}/bin/**
 
   merge:
