@@ -37,8 +37,8 @@ long long fibonacci(int n) {
 }
 
 void ExampleClass::print_fibonacci(int n) const {
-	print_line(vformat("Fibonacci(%d) = %lld", n, fibonacci(n)));
-	print_line(vformat("Fibonacci({}) = {}", n, fibonacci(n)));
-	print_line(vformat("Fibonacci(%d) = %d", n, Variant(fibonacci(n))));
+	// print_line(vformat("Fibonacci(%d) = %lld", n, fibonacci(n)));
+	// print_line(vformat("Fibonacci({}) = {}", n, fibonacci(n)));
+	// print_line(vformat("Fibonacci(%d) = %d", n, Variant(fibonacci(n))));
 	print_line(fibonacci(n));
 }
