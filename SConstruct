@@ -82,7 +82,7 @@ if platform == "windows":
     moonlight_lib_name = "moonlight-common-c.lib"
     moonlight_dll_name = "moonlight-common-c.dll"
 else:
-    moonlight_lib_dir = moonlight_build_dir
+    moonlight_lib_dir = os.path.join(moonlight_build_dir, build_type) 
     moonlight_lib_name = "moonlight-common-c" + (".dylib" if platform == "macos" else ".so")
     moonlight_dll_name = moonlight_lib_name
 

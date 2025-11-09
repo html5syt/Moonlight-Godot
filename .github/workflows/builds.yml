@@ -62,11 +62,12 @@ jobs:
 
       # --- Build with SCons (which calls CMake internally) ---
       - name: Build GDExtension
+        shell: sh
         run: |
           scons \
+            target=${{ matrix.target-type }} \
             platform=${{ matrix.target.platform }} \
             arch=${{ matrix.target.arch }} \
-            target=${{ matrix.target-type }} \
             precision=${{ matrix.float-precision }} \
             use_mbedtls=${{ matrix.use_mbedtls }}
 
