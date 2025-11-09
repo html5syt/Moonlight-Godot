@@ -95,7 +95,7 @@ else:
         shared_lib_dir = os.path.join(shared_build_dir, build_type)
         static_lib = "moonlight-common-c.lib"
         shared_lib = "moonlight-common-c.dll"
-    elif platform == "macos":
+    elif platform == "macos" or platform == "ios":
         static_lib_dir = static_build_dir
         shared_lib_dir = shared_build_dir
         static_lib = "libmoonlight-common-c.a"

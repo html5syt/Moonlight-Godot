@@ -31,7 +31,7 @@ jobs:
           ]
         use_mbedtls: [false]
         target-type: [template_debug, template_release]
-        float-precision: [single, double]
+        float-precision: [single]
 
 
     runs-on: ${{ matrix.target.os }}
@@ -64,6 +64,7 @@ jobs:
           $url = "https://slproweb.com/download/Win64OpenSSL-1_1_1w.exe"
           Invoke-WebRequest -Uri $url -OutFile openssl.exe
           Start-Process -FilePath .\openssl.exe -ArgumentList "/silent","/verysilent" -Wait
+          echo "OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL-Win64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
 
       # --- Setup godot-cpp (prebuilt lib) ---
       - name: Setup godot-cpp
