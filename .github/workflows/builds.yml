@@ -29,12 +29,10 @@ jobs:
             { platform: ios, arch: arm64, os: macos-latest },
             { platform: web, arch: wasm32, os: ubuntu-22.04 },
           ]
-        use_mbedtls: [false, true]
+        use_mbedtls: [false]
         target-type: [template_debug, template_release]
         float-precision: [single, double]
-        exclude:
-          - platform: windows
-            use_mbedtls: true
+
 
     runs-on: ${{ matrix.target.os }}
 
