@@ -69,6 +69,14 @@ jobs:
           Start-Process -FilePath $output -ArgumentList "/silent", "/verysilent", "/sp-", "/suppressmsgboxes" -Wait
           echo "OPENSSL_ROOT=C:\Program Files\OpenSSL-Win64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
 
+      # --- Debug: Print Openssl root (Windows) ---
+      - name: Debug-Print Openssl root (Windows)
+        if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
+        shell: pwsh
+        run: |
+          echo "OPENSSL_ROOT=$env:OPENSSL_ROOT"
+          tree /F $env:OPENSSL_ROOT
+
       # --- Setup godot-cpp ---
       - name: Setup godot-cpp
         uses: ./src/lib/godot-cpp/.github/actions/setup-godot-cpp
@@ -92,13 +100,13 @@ jobs:
         env:
           SCONS_CACHE: ${{ github.workspace }}/.scons-cache/
           OPENSSL: ${{ (matrix.target.platform == 'windows' && matrix.use_mbedtls == false) && 'C:\\Program Files\\OpenSSL-Win64' || '' }}
+          use_mbedtls: ${{ matrix.use_mbedtls }}
         run: |
           scons \
             target=${{ matrix.target-type }} \
             platform=${{ matrix.target.platform }} \
             arch=${{ matrix.target.arch }} \
             precision=${{ matrix.float-precision }} \
-            use_mbedtls=${{ matrix.use_mbedtls }}
             
 
       # --- Save cache ---

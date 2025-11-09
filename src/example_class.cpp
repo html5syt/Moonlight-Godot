@@ -14,7 +14,7 @@ void ExampleClass::print_helloworld() const {
 	print_line("Hello, Wor444ld!你好，世界！");
 }
 
-long long fibonacci(int n) {
+uint64_t fibonacci(int n) {
 	if (n < 0) {
 		print_line("输入应为非负整数");
 		return 0;
@@ -40,5 +40,5 @@ void ExampleClass::print_fibonacci(int n) const {
 	// print_line(vformat("Fibonacci(%d) = %lld", n, fibonacci(n)));
 	// print_line(vformat("Fibonacci({}) = {}", n, fibonacci(n)));
 	// print_line(vformat("Fibonacci(%d) = %d", n, Variant(fibonacci(n))));
-	print_line(fibonacci(n));
+	print_line(Variant(fibonacci(n)));
 }

@@ -173,7 +173,7 @@ ml_env.Append(CPPPATH=[
 # ==============================
 # 处理 USE_MBEDTLS vs OpenSSL（增强版，支持 Windows 路径）
 # ==============================
-use_mbedtls = env.get("use_mbedtls", False)
+use_mbedtls = os.environ.get("use_mbedtls", False)
 if use_mbedtls:
     ml_env.Append(CPPDEFINES=["USE_MBEDTLS"])
     ml_env.Append(LIBS=["mbedcrypto"])
@@ -182,7 +182,7 @@ else:
     if env["platform"] == "windows":
         # 支持通过 OPENSSL=... 指定路径
         # print("WARN：使用预先配置的openssl路径，请在GitHub actions中另外配置！！！")
-        openssl_root = env.get("OPENSSL", "C:\\Program Files\\OpenSSL-Win64")
+        openssl_root = os.environ.get("OPENSSL", "C:\\Program Files\\OpenSSL-Win64")
         # openssl_root = 
         if not openssl_root:
             print_error("OpenSSL path not specified for Windows. Please provide OPENSSL=/path/to/OpenSSL-Win64")
