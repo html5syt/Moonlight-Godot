@@ -1,6 +1,6 @@
 [configuration]
 
-entry_symbol = "example_library_init"
+entry_symbol = "moonlight_gd_extension_init"
 compatibility_minimum = "4.1"
 
 [libraries]
@@ -50,7 +50,34 @@ android.arm64.double.debug = "./android/libMoonlight-Godot.android.template_debu
 android.arm64.single.release = "./android/libMoonlight-Godot.android.template_release.arm64.so"
 android.arm64.double.release = "./android/libMoonlight-Godot.android.template_release.arm64.double.so"
 
-web.wasm32.single.debug = "./web/libMoonlight-Godot.web.template_debug.wasm32.nothreads.wasm"
-web.wasm32.double.debug = "./web/libMoonlight-Godot.web.template_release.wasm32.double.nothreads.wasm"
-web.wasm32.single.release = "./web/libMoonlight-Godot.web.template_release.wasm32.nothreads.wasm"
-web.wasm32.double.release = "./web/libMoonlight-Godot.web.template_release.wasm32.double.nothreads.wasm"
+; web.wasm32.single.debug = "./web/libMoonlight-Godot.web.template_debug.wasm32.nothreads.wasm"
+; web.wasm32.double.debug = "./web/libMoonlight-Godot.web.template_release.wasm32.double.nothreads.wasm"
+; web.wasm32.single.release = "./web/libMoonlight-Godot.web.template_release.wasm32.nothreads.wasm"
+; web.wasm32.double.release = "./web/libMoonlight-Godot.web.template_release.wasm32.double.nothreads.wasm"
+
+[dependencies]
+
+macos.debug = {
+    "res://bin/moonlight-common-c.framework" : "Contents/Frameworks"
+}
+macos.release = {
+    "res://bin/moonlight-common-c.framework" : "Contents/Frameworks"
+}
+windows.debug = {
+    "res://bin/moonlight-common-c.dll" : "",
+    "res://bin/moonlight-common-c.dll" : ""
+}
+windows.release = {
+    "res://bin/moonlight-common-c.dll" : "",
+    "res://bin/moonlight-common-c.dll" : ""
+}
+linux.debug = {
+    "res://bin/moonlight-common-c.so" : "",
+    "res://bin/moonlight-common-c.so" : "",
+    "res://bin/moonlight-common-c.so" : ""
+}
+linux.release = {
+    "res://bin/moonlight-common-c.so" : "",
+    "res://bin/moonlight-common-c.so" : "",
+    "res://bin/moonlight-common-c.so" : ""
+}

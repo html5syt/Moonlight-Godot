@@ -1,4 +1,4 @@
-name: Build Moonlight GDExtension
+name: Build Moonlight GDExtension (CMake + SCons)
 
 on:
   push:
@@ -21,18 +21,11 @@ jobs:
           # macOS
           - { platform: macos,   arch: universal, os: macos-latest }
           # 可选：Android / iOS（当前注释掉）
-          # - { platform: android, arch: arm64, os: ubuntu-22.04 }
-          # - { platform: ios,     arch: arm64, os: macos-latest }
-
-        use_mbedtls: [false]
+          - { platform: android, arch: arm64, os: ubuntu-22.04 }
+          - { platform: ios,     arch: arm64, os: macos-latest }
+        use_mbedtls: [false, true]
         target-type: [template_debug, template_release]
         float-precision: [single]
-
-        # 排除不支持 mbedtls 的组合（例如 Windows + mbedtls 暂不支持？按需调整）
-        # exclude:
-          # 示例：若 Windows 不支持 MbedTLS 构建，可排除
-          # - target: { platform: windows, arch: x86_64, os: windows-latest }
-          #   use_mbedtls: true
 
     runs-on: ${{ matrix.target.os }}
 
@@ -42,14 +35,8 @@ jobs:
         with:
           submodules: recursive
 
-      # --- Install multilib for x86_32 (if ever added back) ---
-      - name: Install multilib (Linux x86_32)
-        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_32' }}
-        run: |
-          sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
-
-      # --- Install MbedTLS (non-Windows) ---
-      - name: Install MbedTLS (if needed)
+      # --- Install deps ---
+      - name: Install MbedTLS (Linux/macOS)
         if: ${{ matrix.use_mbedtls == true && matrix.target.platform != 'windows' }}
         run: |
           if [[ "${{ matrix.target.platform }}" == "linux" ]]; then
@@ -58,83 +45,37 @@ jobs:
             brew install mbedtls
           fi
 
-      # --- Install OpenSSL on Windows (when not using MbedTLS) ---
-      - name: Download OpenSSL for Windows
+      - name: Install OpenSSL for Windows
         if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
         shell: pwsh
         run: |
-          $url = "https://slproweb.com/download/Win64OpenSSL-3_6_0.exe"
-          $output = "openssl-installer.exe"
-          Invoke-WebRequest -Uri $url -OutFile $output
-          Start-Process -FilePath $output -ArgumentList "/silent", "/verysilent", "/sp-", "/suppressmsgboxes" -Wait
-          echo "OPENSSL_ROOT=C:\Program Files\OpenSSL-Win64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+          $url = "https://slproweb.com/download/Win64OpenSSL-1_1_1w.exe"
+          Invoke-WebRequest -Uri $url -OutFile openssl.exe
+          Start-Process -FilePath .\openssl.exe -ArgumentList "/silent","/verysilent" -Wait
 
-      # --- Debug: Print Openssl root (Windows) ---
-      - name: Debug-Print Openssl root (Windows)
-        if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
-        shell: pwsh
-        run: |
-          echo "OPENSSL_ROOT=$env:OPENSSL_ROOT"
-          tree /F C:\Program Files\OpenSSL-Win64
-
-      # --- Setup godot-cpp ---
+      # --- Setup godot-cpp (prebuilt lib) ---
       - name: Setup godot-cpp
         uses: ./src/lib/godot-cpp/.github/actions/setup-godot-cpp
         with:
           platform: ${{ matrix.target.platform }}
           em-version: 3.1.62
 
-      # --- Cache ---
-      - name: Restore .scons_cache
-        uses: ./src/lib/godot-cpp/.github/actions/godot-cache-restore
-        with:
-          scons-cache: ${{ github.workspace }}/.scons-cache/
-          cache-name: >-
-            ${{ matrix.target.platform }}_${{ matrix.target.arch }}_
-            ${{ matrix.float-precision }}_${{ matrix.target-type }}_
-            ${{ matrix.use_mbedtls }}
-
-      # --- Build ---
+      # --- Build with SCons (which calls CMake internally) ---
       - name: Build GDExtension
-        shell: sh
-        env:
-          SCONS_CACHE: ${{ github.workspace }}/.scons-cache/
-          OPENSSL: ${{ (matrix.target.platform == 'windows' && matrix.use_mbedtls == false) && 'C:\\Program Files\\OpenSSL-Win64' || '' }}
-          use_mbedtls: ${{ matrix.use_mbedtls }}
         run: |
           scons \
-            target=${{ matrix.target-type }} \
             platform=${{ matrix.target.platform }} \
             arch=${{ matrix.target.arch }} \
+            target=${{ matrix.target-type }} \
             precision=${{ matrix.float-precision }} \
-            
-
-      # --- Save cache ---
-      - name: Save .scons_cache
-        uses: ./src/lib/godot-cpp/.github/actions/godot-cache-save
-        with:
-          scons-cache: ${{ github.workspace }}/.scons-cache/
-          cache-name: >-
-            ${{ matrix.target.platform }}_${{ matrix.target.arch }}_
-            ${{ matrix.float-precision }}_${{ matrix.target-type }}_
-            ${{ matrix.use_mbedtls }}
-
-      # --- Cleanup Windows extra files ---
-      - name: Windows - Delete extra compilation files
-        if: ${{ matrix.target.platform == 'windows' }}
-        shell: pwsh
-        run: |
-          Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force -ErrorAction SilentlyContinue
+            use_mbedtls=${{ matrix.use_mbedtls }}
 
       # --- Upload artifact ---
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: >-
-            moonlight-godot-${{ matrix.target.platform }}-
-            ${{ matrix.target.arch }}-${{ matrix.target-type }}-
-            ${{ matrix.use_mbedtls }}
-          path: ${{ github.workspace }}/bin/**
+          name: moonlight-gdext-${{ matrix.target.platform }}-${{ matrix.target.arch }}-${{ matrix.target-type }}-${{ matrix.use_mbedtls }}
+          path: bin/
 
   merge:
     runs-on: ubuntu-22.04
@@ -143,6 +84,6 @@ jobs:
       - name: Merge Artifacts
         uses: actions/upload-artifact/merge@v4
         with:
-          name: moonlight-godot-all
-          pattern: moonlight-godot-*
+          name: moonlight-gdextension-all
+          pattern: moonlight-gdext-*
           delete-merged: true
