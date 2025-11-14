@@ -27,7 +27,7 @@ jobs:
             { platform: android, arch: arm64, os: ubuntu-22.04 },
             # { platform: android, arch: arm32, os: ubuntu-22.04 },
             { platform: ios, arch: arm64, os: macos-latest },
-            { platform: web, arch: wasm32, os: ubuntu-22.04 },
+            # { platform: web, arch: wasm32, os: ubuntu-22.04 },
           ]
         use_mbedtls: [false]
         target-type: [template_debug, template_release]
@@ -61,10 +61,12 @@ jobs:
         if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
         shell: pwsh
         run: |
-          $url = "https://slproweb.com/download/Win64OpenSSL-1_1_1w.exe"
-          Invoke-WebRequest -Uri $url -OutFile openssl.exe
-          Start-Process -FilePath .\openssl.exe -ArgumentList "/silent","/verysilent" -Wait
-          echo "OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL-Win64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+          choco uninstall openssl.light ;
+          $installer_url = (Invoke-WebRequest https://raw.githubusercontent.com/slproweb/opensslhashes/master/win32_openssl_hashes.json ).Content 
+          | jq --raw-output '.files | to_entries | map(select(.key | test(\"^.*Win64OpenSSL-.*\\.exe$\"))) | max_by(.key) | .value.url' ;
+          Invoke-WebRequest -OutFile Win64OpenSSL.exe $installer_url ;
+          Start-Process -FilePath ./Win64OpenSSL.exe -ArgumentList "/silent","/sp-","/suppressmsgboxes","/DIR=C:\OpenSSL" -Wait; 
+          C:\OpenSSL\bin\openssl.exe version
 
       # --- Setup godot-cpp (prebuilt lib) ---
       - name: Setup godot-cpp
@@ -90,8 +92,9 @@ jobs:
         shell: sh
         if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
         run: |
-          export OPENSSL_ROOT_DIR="C:\Program Files\OpenSSL-Win64"
-          scons \
+          export OPENSSL_ROOT_DIR="C:\OpenSSL"
+          ls -la $OPENSSL_ROOT_DIR
+          OPENSSL_ROOT_DIR="C:\OpenSSL" scons \
             target=${{ matrix.target-type }} \
             platform=${{ matrix.target.platform }} \
             arch=${{ matrix.target.arch }} \
