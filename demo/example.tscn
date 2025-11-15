@@ -4,3 +4,7 @@
 
 [node name="Node" type="Node"]
 script = ExtResource("1_jdh55")
+
+[node name="MoonlightStream" type="MoonlightStream" parent="."]
+host_address = "127.0.0.1"
+app_id = 1

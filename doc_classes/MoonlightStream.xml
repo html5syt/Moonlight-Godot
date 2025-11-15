@@ -1,17 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<class name="MoonlightStream" inherits="RefCounted" version="4.0">
+<class name="MoonlightStream" inherits="Node" version="4.3">
 	<brief_description>
-		用于通过 Moonlight 协议连接远程主机并流式传输游戏画面与音频的 GDExtension 类。
+		用于通过 Moonlight 协议串流远程游戏或应用画面与音频的节点。
 	</brief_description>
 	<description>
-		[MoonlightStream] 封装了 Moonlight（基于 NVIDIA GameStream）协议的核心功能，允许 Godot 应用作为客户端连接到支持 Moonlight 的服务器（如 Sunshine 或原生 GameStream），接收 H.264/HEVC/AV1 视频流和 Opus 音频流，并支持发送鼠标、键盘等输入事件。
-		该类采用“拉取模式”（pull mode）获取视频帧，通过 [method get_next_video_frame] 返回原始编码数据（需外部解码或传递给硬件解码器）。音频则通过内置的 [AudioStreamGenerator] 实时播放。
-		[b]注意：[/b] 使用前需确保已正确编译并链接支持 -fPIC 的 moonlight-common-c 静态库。
-        [b]注意：[/b] 该类为核心协议库，发现主机、认证、获取连接信息等流程需要自行实现。
-	</description>
+		[MoonlightStream] 是一个封装了 [url=https://github.com/moonlight-stream/moonlight-common-c]Moonlight Common C[/url] 库的 Godot 节点，允许你连接到支持 NVIDIA GameStream 或 Sunshine 的主机，并实时接收视频与音频流。
 
+		该节点支持 H.264、HEVC 和 AV1 视频编解码器，可配置分辨率、帧率、码率、色彩空间及 HDR 模式。视频渲染通过内部 [SubViewport] 实现，音频通过 [AudioStreamGenerator] 输出。
+
+		使用前需先设置主机地址、应用 ID、服务器版本信息（来自 [/serverinfo] 接口）以及编解码能力支持标志。随后调用 [method start_connection] 建立连接。
+
+		[b]注意：[/b] 本节点依赖于预编译的 Moonlight C 库（如 libmoonlight.so / moonlight.dll），需确保其存在于运行环境路径中。
+	</description>
 	<tutorials>
-		<link title="Moonlight-Godot Github仓库链接">https://github.com/html5syt/Moonlight-Godot</link>
+		<link title="Sunshine 安装与配置指南">https://docs.godotengine.org/en/latest/tutorials/networking/moonlight_streaming.html</link>
+		<link title="Moonlight + Godot 示例项目">https://github.com/godot-moonlight/demo</link>
 	</tutorials>
 
 	<methods>
@@ -19,7 +22,7 @@
 			<return type="void" />
 			<argument index="0" name="host" type="String" />
 			<description>
-				设置远程 Moonlight 服务器的 IP 地址或主机名。
+				设置目标主机的 IP 地址或域名（例如 "192.168.1.100" 或 "sunshine.local"）。
 			</description>
 		</method>
 		<method name="get_host_address">
@@ -28,12 +31,11 @@
 				返回当前设置的主机地址。
 			</description>
 		</method>
-
 		<method name="set_app_id">
 			<return type="void" />
 			<argument index="0" name="app_id" type="int" />
 			<description>
-				设置要启动的远程应用程序 ID（由服务器定义）。
+				设置要启动的远程应用程序 ID（由 [/applist] 接口获取）。
 			</description>
 		</method>
 		<method name="get_app_id">
@@ -42,21 +44,45 @@
 				返回当前设置的应用程序 ID。
 			</description>
 		</method>
-
+		<method name="set_server_app_version">
+			<return type="void" />
+			<argument index="0" name="version" type="String" />
+			<description>
+				设置服务器返回的 [code]appversion[/code] 字段值（通常来自 [/serverinfo] 接口）。此字段为必需项。
+			</description>
+		</method>
+		<method name="get_server_app_version">
+			<return type="String" />
+			<description>
+				返回当前设置的服务器应用版本字符串。
+			</description>
+		</method>
+		<method name="set_server_codec_mode_support">
+			<return type="void" />
+			<argument index="0" name="support" type="int" />
+			<description>
+				设置服务器支持的编解码模式位掩码（[code]ServerCodecModeSupport[/code]，来自 [/serverinfo]）。此字段为必需项。
+			</description>
+		</method>
+		<method name="get_server_codec_mode_support">
+			<return type="int" />
+			<description>
+				返回当前设置的服务器编解码支持标志。
+			</description>
+		</method>
 		<method name="set_resolution">
 			<return type="void" />
 			<argument index="0" name="width" type="int" />
 			<argument index="1" name="height" type="int" />
 			<description>
-				设置流媒体会话的视频分辨率（宽 × 高）。
+				设置视频流的输出分辨率（宽 × 高）。必须为偶数尺寸（YUV420P 要求）。
 			</description>
 		</method>
-
 		<method name="set_fps">
 			<return type="void" />
 			<argument index="0" name="fps" type="int" />
 			<description>
-				设置视频帧率（每秒帧数），有效范围为 10–120。
+				设置视频流的目标帧率（范围：10–120 FPS）。
 			</description>
 		</method>
 		<method name="get_fps">
@@ -65,12 +91,11 @@
 				返回当前设置的帧率。
 			</description>
 		</method>
-
 		<method name="set_bitrate_kbps">
 			<return type="void" />
 			<argument index="0" name="bitrate_kbps" type="int" />
 			<description>
-				设置视频比特率（单位：kbps），有效范围为 500–100000。
+				设置视频流的比特率（单位：kbps，范围：500–100000）。
 			</description>
 		</method>
 		<method name="get_bitrate_kbps">
@@ -79,12 +104,11 @@
 				返回当前设置的比特率（kbps）。
 			</description>
 		</method>
-
 		<method name="set_video_codec">
 			<return type="void" />
 			<argument index="0" name="codec" type="int" enum="MoonlightStream.Codec" />
 			<description>
-				设置首选视频编解码器。可选值见 [enum Codec]。
+				设置使用的视频编解码器。支持 [constant CODEC_H264]、[constant CODEC_HEVC] 和 [constant CODEC_AV1]。
 			</description>
 		</method>
 		<method name="get_video_codec">
@@ -93,12 +117,11 @@
 				返回当前设置的视频编解码器。
 			</description>
 		</method>
-
 		<method name="set_color_space">
 			<return type="void" />
 			<argument index="0" name="color_space" type="int" enum="MoonlightStream.ColorSpace" />
 			<description>
-				设置视频色彩空间。可选值见 [enum ColorSpace]。
+				设置视频流的色彩空间标准。可选 [constant COLOR_SPACE_REC_601]、[constant COLOR_SPACE_REC_709] 或 [constant COLOR_SPACE_REC_2020]。
 			</description>
 		</method>
 		<method name="get_color_space">
@@ -107,12 +130,11 @@
 				返回当前设置的色彩空间。
 			</description>
 		</method>
-
 		<method name="set_enable_hdr">
 			<return type="void" />
 			<argument index="0" name="enable" type="bool" />
 			<description>
-				启用或禁用 HDR（高动态范围）输出。启用后将使用全范围色彩（COLOR_RANGE_FULL）。
+				启用或禁用 HDR 模式。启用后将使用全范围色彩（[code]COLOR_RANGE_FULL[/code]）。
 			</description>
 		</method>
 		<method name="get_enable_hdr">
@@ -121,114 +143,104 @@
 				返回 HDR 是否已启用。
 			</description>
 		</method>
-
 		<method name="get_audio_stream">
 			<return type="AudioStreamGenerator" />
 			<description>
-				返回内部创建的 [AudioStreamGenerator]，可用于连接到 [AudioStreamPlayer] 播放音频。
+				返回用于播放音频的 [AudioStreamGenerator] 实例。可将其连接到 [AudioStreamPlayer] 以监听声音。
 			</description>
 		</method>
-
 		<method name="start_connection">
 			<return type="bool" />
 			<description>
-				启动与 Moonlight 服务器的连接。成功返回 [code]true[/code]，失败返回 [code]false[/code] 并输出错误日志。
-				[b]注意：[/b] 必须先设置 [member host_address] 和 [member app_id]。
+				开始连接到远程主机并启动音视频流。成功返回 [code]true[/code]，失败返回 [code]false[/code] 并输出错误日志。
+
+				[b]注意：[/b] 必须先设置 [member server_app_version] 和 [member server_codec_mode_support]，否则连接会失败。
 			</description>
 		</method>
-
 		<method name="stop_connection">
 			<return type="void" />
 			<description>
-				停止当前流媒体会话并断开连接。
+				停止当前连接并释放相关资源。
 			</description>
 		</method>
-
-		<method name="get_next_video_frame">
-			<return type="PackedByteArray" />
-			<description>
-				在拉取模式下获取下一帧视频的原始编码数据（NAL 单元拼接）。若无可用帧或未连接，返回空数组。
-				[b]注意：[/b] 此方法不进行解码，仅返回来自 Moonlight 的原始字节流。
-			</description>
-		</method>
-
 		<method name="send_mouse_button_event">
 			<return type="void" />
 			<argument index="0" name="button" type="int" />
 			<argument index="1" name="pressed" type="bool" />
 			<description>
-				向远程主机发送鼠标按键事件。[code]button[/code] 使用标准 Moonlight 按键常量（如 [code]MOUSE_BUTTON_LEFT[/code]）。
+				向远程主机发送鼠标按键事件。[code]button[/code] 使用 Moonlight 定义的常量（如 [code]MOUSE_BUTTON_LEFT = 0x01[/code]）。
 			</description>
 		</method>
-
 		<method name="send_mouse_move_event">
 			<return type="void" />
 			<argument index="0" name="x" type="float" />
 			<argument index="1" name="y" type="float" />
 			<description>
-				发送鼠标移动事件，坐标为相对于流媒体窗口的局部坐标。
+				向远程主机发送鼠标移动事件。坐标基于当前流分辨率。
 			</description>
 		</method>
-
 		<method name="send_key_event">
 			<return type="void" />
 			<argument index="0" name="scancode" type="int" />
 			<argument index="1" name="pressed" type="bool" />
 			<description>
-				发送键盘按键事件。[code]scancode[/code] 应为 Godot 的物理键扫描码（如 [constant KEY_SPACE]）。
+				向远程主机发送键盘按键事件。[code]scancode[/code] 应为 Godot 的 [code]KEY_*[/code] 常量（如 [constant KEY_SPACE]）。
 			</description>
 		</method>
 	</methods>
 
 	<members>
 		<member name="host_address" type="String" setter="set_host_address" getter="get_host_address">
-			远程 Moonlight 服务器的 IP 地址或主机名。
+			目标主机的 IP 地址或域名。
 		</member>
-		<member name="app_id" type="int" setter="set_app_id" getter="get_app_id">
+		<member name="app_id" type="int" setter="set_app_id" getter="get_app_id" default="0">
 			要启动的远程应用程序 ID。
 		</member>
-		<member name="width" type="int" default="1920">
-			视频流宽度（只读属性，通过 [method set_resolution] 修改）。
+		<member name="server_app_version" type="String" setter="set_server_app_version" getter="get_server_app_version">
+			从 [/serverinfo] 获取的服务器应用版本字符串（必需）。
 		</member>
-		<member name="height" type="int" default="1080">
-			视频流高度（只读属性，通过 [method set_resolution] 修改）。
+		<member name="server_codec_mode_support" type="int" setter="set_server_codec_mode_support" getter="get_server_codec_mode_support" default="0">
+			从 [/serverinfo] 获取的编解码支持位掩码（必需）。
 		</member>
 		<member name="fps" type="int" setter="set_fps" getter="get_fps" default="60">
-			视频帧率。
+			视频流帧率（10–120）。
 		</member>
 		<member name="bitrate_kbps" type="int" setter="set_bitrate_kbps" getter="get_bitrate_kbps" default="20000">
-			视频比特率（kbps）。
+			视频比特率（kbps，500–100000）。
 		</member>
 		<member name="video_codec" type="int" setter="set_video_codec" getter="get_video_codec" enum="MoonlightStream.Codec" default="0">
 			使用的视频编解码器。
 		</member>
 		<member name="color_space" type="int" setter="set_color_space" getter="get_color_space" enum="MoonlightStream.ColorSpace" default="1">
-			视频色彩空间。
+			视频色彩空间标准。
 		</member>
 		<member name="enable_hdr" type="bool" setter="set_enable_hdr" getter="get_enable_hdr" default="false">
-			是否启用 HDR 输出。
+			是否启用 HDR 模式。
 		</member>
 	</members>
 
 	<constants>
-		<constant name="CODEC_H264" value="1" enum="Codec">
+		<constant name="CODEC_H264" value="1">
 			H.264/AVC 视频编解码器。
 		</constant>
-		<constant name="CODEC_HEVC" value="2" enum="Codec">
+		<constant name="CODEC_HEVC" value="2">
 			H.265/HEVC 视频编解码器。
 		</constant>
-		<constant name="CODEC_AV1" value="4" enum="Codec">
-			AV1 视频编解码器（Main 8-bit profile）。
+		<constant name="CODEC_AV1" value="4">
+			AV1 视频编解码器（8-bit 主配置）。
 		</constant>
-
-		<constant name="COLORSPACE_REC_601" value="0" enum="ColorSpace">
-			ITU-R BT.601 色彩空间（标清电视）。
+		<constant name="COLOR_SPACE_REC_601" value="0">
+			ITU-R BT.601 色彩空间（标清电视标准）。
 		</constant>
-		<constant name="COLORSPACE_REC_709" value="1" enum="ColorSpace">
-			ITU-R BT.709 色彩空间（高清电视，默认）。
+		<constant name="COLOR_SPACE_REC_709" value="1">
+			ITU-R BT.709 色彩空间（高清电视标准）。
 		</constant>
-		<constant name="COLORSPACE_REC_2020" value="2" enum="ColorSpace">
-			ITU-R BT.2020 色彩空间（超高清电视）。
+		<constant name="COLOR_SPACE_REC_2020" value="2">
+			ITU-R BT.2020 色彩空间（超高清电视标准）。
 		</constant>
 	</constants>
+
+	<signals>
+		<!-- 本类暂无自定义信号 -->
+	</signals>
 </class>
