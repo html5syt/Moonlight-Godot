@@ -9,3 +9,6 @@ func _ready() -> void:
     example.print_fibonacci(2**31-1)
     var end = Time.get_ticks_usec()
     print("Use Time（μs）:",end-start)
+    
+    var moonlignt = MoonlightStream.new()
+    moonlignt.start_connection()
