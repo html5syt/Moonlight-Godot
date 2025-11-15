@@ -44,7 +44,7 @@ jobs:
 
       # --- Install deps ---
       - name: Install MbedTLS (Linux/macOS)
-        if: ${{ matrix.use_mbedtls == true && matrix.target.platform != 'windows' }}
+        if: ${{ matrix.target.platform != 'windows' }}
         run: |
           if [[ "${{ matrix.target.platform }}" == "linux" ]]; then
             sudo apt-get update && sudo apt-get install -y libmbedtls-dev
