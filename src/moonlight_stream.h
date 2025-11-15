@@ -1,16 +1,16 @@
 #pragma once
 
+#include "godot_cpp/classes/ref_counted.hpp"
+#include "godot_cpp/variant/string.hpp"
+#include "godot_cpp/variant/packed_byte_array.hpp"
 #include "godot_cpp/classes/audio_stream_generator.hpp"
 #include "godot_cpp/classes/audio_stream_generator_playback.hpp"
-#include "godot_cpp/classes/ref_counted.hpp"
-#include "godot_cpp/variant/packed_byte_array.hpp"
-#include "godot_cpp/variant/packed_float32_array.hpp"
-#include "godot_cpp/variant/string.hpp"
 
-#include <map>
 extern "C" {
 #include "lib/moonlight-common-c/src/Limelight.h"
 }
+
+#include <map>
 
 using namespace godot;
 
@@ -29,8 +29,9 @@ public:
 		COLOR_SPACE_REC_709 = COLORSPACE_REC_709,
 		COLOR_SPACE_REC_2020 = COLORSPACE_REC_2020,
 	};
-	// Public for C callback access (via MoonlightStream::instance_map)
-	static std::map<void *, MoonlightStream *> instance_map;
+
+	// Public for C callback access
+	static std::map<void*, MoonlightStream*> instance_map;
 
 private:
 	static void _bind_methods();
@@ -45,18 +46,15 @@ private:
 	Codec video_codec = CODEC_H264;
 	ColorSpace color_space = COLOR_SPACE_REC_709;
 	bool enable_hdr = false;
-	void *render_context = nullptr;
 
-	// protected:
-	// 	// Must be protected so static callbacks can access via instance
-	// 	Ref<AudioStreamGenerator> audio_stream;
-	// 	Ref<AudioStreamGeneratorPlayback> audio_playback;
+	void* render_context = nullptr;
+
+// protected:
+
 
 public:
-	// Must be protected so static callbacks can access via instance
 	Ref<AudioStreamGenerator> audio_stream;
 	Ref<AudioStreamGeneratorPlayback> audio_playback;
-
 	MoonlightStream();
 	~MoonlightStream() override;
 
@@ -66,14 +64,8 @@ public:
 	void set_app_id(int p_app_id) { app_id = p_app_id; }
 	int get_app_id() const { return app_id; }
 
-	void set_resolution(int p_width, int p_height) {
-		width = p_width;
-		height = p_height;
-	}
-	void get_resolution(int &r_width, int &r_height) const {
-		r_width = width;
-		r_height = height;
-	}
+	void set_resolution(int p_width, int p_height) { width = p_width; height = p_height; }
+	void get_resolution(int &r_width, int &r_height) const { r_width = width; r_height = height; }
 
 	void set_fps(int p_fps) { fps = p_fps; }
 	int get_fps() const { return fps; }
