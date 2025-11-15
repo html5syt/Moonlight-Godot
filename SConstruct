@@ -41,27 +41,61 @@ print(f"[Info] Building for platform={platform}, arch={arch}, target={target}")
 static_build_dir = f"{build_root}/moonlight-static-{platform}-{arch}-{build_type}"
 Path(static_build_dir).mkdir(parents=True, exist_ok=True)
 
-# === CMake 静态库构建 ===
+# === CMake 基础参数 ===
 cmake_base_args = [
     "cmake",
     "-S", str(moonlight_src),
     f"-DCMAKE_BUILD_TYPE={build_type}",
     "-DBUILD_SHARED_LIBS=OFF",
-    "-DCMAKE_POSITION_INDEPENDENT_CODE=ON", 
 ]
 
+# === 平台特定 CMake 配置与构建 ===
 if platform == "windows":
     cmake_base_args += ["-A", "x64"]
-    cmake_base_args += ["-DCMAKE_C_FLAGS=/wd5287"]  # 抑制 ENet 警告
+    rt_flag = "/MDd" if is_debug else "/MD"
+    # 尽可能传递 /MDd（即使 moonlight-common-c 只读，也尝试）
+    cmake_base_args += [
+        f"-DCMAKE_C_FLAGS={rt_flag} /wd5287",
+        f"-DCMAKE_CXX_FLAGS={rt_flag}",
+        "-B", static_build_dir
+    ]
 
-print("[CMake] Building STATIC library...")
-ret = subprocess.run(cmake_base_args + ["-B", static_build_dir], env=os.environ)
-if ret.returncode != 0:
-    sys.exit(f"CMake configure failed ({ret.returncode})")
+    ret = subprocess.run(cmake_base_args, env=os.environ)
+    if ret.returncode != 0:
+        sys.exit(f"CMake configure failed ({ret.returncode})")
 
-ret = subprocess.run(["cmake", "--build", static_build_dir, "--config", build_type], env=os.environ)
-if ret.returncode != 0:
-    sys.exit(f"Static build failed ({ret.returncode})")
+    ret = subprocess.run(["cmake", "--build", static_build_dir, "--config", build_type], env=os.environ)
+    if ret.returncode != 0:
+        sys.exit(f"Static build failed ({ret.returncode})")
+
+elif platform in ("macos", "ios"):
+    cmake_base_args += [
+        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+        "-B", static_build_dir
+    ]
+    if platform == "macos":
+        cmake_base_args += [f"-DCMAKE_OSX_ARCHITECTURES={arch}"]
+    else:  # ios
+        cmake_base_args += ["-DCMAKE_SYSTEM_NAME=iOS"]
+
+    ret = subprocess.run(cmake_base_args, env=os.environ)
+    if ret.returncode != 0:
+        sys.exit("CMake configure failed")
+    ret = subprocess.run(["cmake", "--build", static_build_dir, "--config", build_type], env=os.environ)
+    if ret.returncode != 0:
+        sys.exit("Static build failed")
+
+else:  # linux, android, etc.
+    cmake_base_args += [
+        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+        "-B", static_build_dir
+    ]
+    ret = subprocess.run(cmake_base_args, env=os.environ)
+    if ret.returncode != 0:
+        sys.exit("CMake configure failed")
+    ret = subprocess.run(["cmake", "--build", static_build_dir, "--config", build_type], env=os.environ)
+    if ret.returncode != 0:
+        sys.exit("Static build failed")
 
 # === 库文件路径映射 ===
 if platform == "windows":
@@ -70,7 +104,7 @@ if platform == "windows":
 elif platform in ("macos", "ios"):
     static_lib_dir = static_build_dir
     static_lib_name = "libmoonlight-common-c.a"
-else:  # linux
+else:  # linux, android
     static_lib_dir = static_build_dir
     static_lib_name = "libmoonlight-common-c.a"
 
@@ -83,29 +117,24 @@ env = SConscript(os.path.join(godot_cpp_path, "SConstruct"), {"env": env, "custo
 
 # === 平台特定链接配置 ===
 if platform == "windows":
-    # CRT 兼容性
+    # ✅ 正确处理 CRT 冲突（关键修复！）
     if is_debug:
-        env.Append(LINKFLAGS=["/NODEFAULTLIB:MSVCRT", "/NODEFAULTLIB:LIBCMT"])
+        # Debug: 使用 MSVCRTD，禁止静态 CRT 库
+        env.Append(LINKFLAGS=["/NODEFAULTLIB:LIBCMTD", "/NODEFAULTLIB:LIBCMT"])
     else:
-        env.Append(LINKFLAGS=["/NODEFAULTLIB:MSVCRTD", "/NODEFAULTLIB:LIBCMTD"])
+        # Release: 使用 MSVCRT，禁止静态 CRT 库
+        env.Append(LINKFLAGS=["/NODEFAULTLIB:LIBCMT", "/NODEFAULTLIB:LIBCMTD"])
 
-    # OpenSSL 路径（来自环境变量）
     openssl_root = os.environ.get("OPENSSL_ROOT_DIR")
     if not openssl_root:
-        raise Exception("环境变量 OPENSSL_ROOT_DIR 未设置！")
+        raise Exception("Environment variable OPENSSL_ROOT_DIR is not set!")
 
     crt_subdir = "MDd" if is_debug else "MD"
     openssl_lib_dir = os.path.join(openssl_root, "lib", "VC", "x64", crt_subdir)
-
-    # ENet 路径（由 CMake 构建生成）
     enet_lib_dir = os.path.join(static_build_dir, "enet", build_type)
 
     env.Append(
-        LIBPATH=[
-            static_lib_dir,
-            enet_lib_dir,
-            openssl_lib_dir,
-        ],
+        LIBPATH=[static_lib_dir, enet_lib_dir, openssl_lib_dir],
         LIBS=[
             "moonlight-common-c",
             "enet",
@@ -116,19 +145,45 @@ if platform == "windows":
             "advapi32",
         ]
     )
+
 elif platform == "linux":
-    env.Append(LIBS=["moonlight-common-c", "ssl", "crypto", "m", "pthread"])
-    env.Append(LIBPATH=[static_lib_dir])
-elif platform in ("macos", "ios"):
-    env.Append(LIBS=["moonlight-common-c"])
-    env.Append(LIBPATH=[static_lib_dir])
-    env.Append(FRAMEWORKS=["Security", "CoreFoundation"])
+    env.Append(
+        LIBPATH=[static_lib_dir],
+        LIBS=["moonlight-common-c", "ssl", "crypto", "m", "pthread"]
+    )
+
+elif platform == "android":
+    env.Append(
+        LIBPATH=[static_lib_dir],
+        LIBS=["moonlight-common-c", "ssl", "crypto"]
+    )
+
+elif platform == "macos":
+    env.Append(
+        LIBPATH=[static_lib_dir],
+        LIBS=["moonlight-common-c"],
+        FRAMEWORKS=["Security", "CoreFoundation"]
+    )
+
+elif platform == "ios":
+    env.Append(
+        LIBPATH=[static_lib_dir],
+        LIBS=["moonlight-common-c"]
+    )
 
 # === 源码与头文件 ===
 env.Append(CPPPATH=["src/"])
 sources = Glob("src/*.cpp")
 sources.extend(Glob("src/*/*.cpp"))
 
+# === ✅ 新增：GDExtension 文档支持（Godot 4.3+）===
+# if env["target"] in ["editor", "template_debug"]:
+try:
+    doc_data = env.GodotCPPDocData("src/gen/doc_data.gen.cpp", source=Glob("doc_classes/*.xml"))
+    sources.append(doc_data)
+except AttributeError:
+    print("Not including class reference as we're targeting a pre-4.3 baseline.")
+        
 # === 构建 GDExtension ===
 suffix = env["suffix"].replace(".dev", "").replace(".universal", "")
 plugin_filename = f"{libname}{suffix}{env['SHLIBSUFFIX']}"
