@@ -56,29 +56,29 @@ android.arm64.double.release = "./android/libMoonlight-Godot.android.template_re
 ; web.wasm32.single.release = "./web/libMoonlight-Godot.web.template_release.wasm32.nothreads.wasm"
 ; web.wasm32.double.release = "./web/libMoonlight-Godot.web.template_release.wasm32.double.nothreads.wasm"
 
-[dependencies]
+; [dependencies]
 
-macos.debug = {
-    "res://bin/moonlight-common-c.framework" : "Contents/Frameworks"
-}
-macos.release = {
-    "res://bin/moonlight-common-c.framework" : "Contents/Frameworks"
-}
-windows.debug = {
-    "res://bin/moonlight-common-c.dll" : "",
-    "res://bin/moonlight-common-c.dll" : ""
-}
-windows.release = {
-    "res://bin/moonlight-common-c.dll" : "",
-    "res://bin/moonlight-common-c.dll" : ""
-}
-linux.debug = {
-    "res://bin/moonlight-common-c.so" : "",
-    "res://bin/moonlight-common-c.so" : "",
-    "res://bin/moonlight-common-c.so" : ""
-}
-linux.release = {
-    "res://bin/moonlight-common-c.so" : "",
-    "res://bin/moonlight-common-c.so" : "",
-    "res://bin/moonlight-common-c.so" : ""
-}
+; macos.debug = {
+;     "res://bin/moonlight-common-c.framework" : "Contents/Frameworks"
+; }
+; macos.release = {
+;     "res://bin/moonlight-common-c.framework" : "Contents/Frameworks"
+; }
+; windows.debug = {
+;     "res://bin/moonlight-common-c.dll" : "",
+;     "res://bin/moonlight-common-c.dll" : ""
+; }
+; windows.release = {
+;     "res://bin/moonlight-common-c.dll" : "",
+;     "res://bin/moonlight-common-c.dll" : ""
+; }
+; linux.debug = {
+;     "res://bin/moonlight-common-c.so" : "",
+;     "res://bin/moonlight-common-c.so" : "",
+;     "res://bin/moonlight-common-c.so" : ""
+; }
+; linux.release = {
+;     "res://bin/moonlight-common-c.so" : "",
+;     "res://bin/moonlight-common-c.so" : "",
+;     "res://bin/moonlight-common-c.so" : ""
+; }

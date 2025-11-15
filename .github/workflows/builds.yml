@@ -90,8 +90,8 @@ jobs:
         shell: sh
         if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
         run: |
-          export OPENSSL_ROOT_DIR="C:\Program Files\OpenSSL-Win64"
-          OPENSSL_ROOT_DIR="C:\Program Files\OpenSSL-Win64" scons \
+          export OPENSSL_ROOT_DIR="C:\Program Files\OpenSSL"
+          OPENSSL_ROOT_DIR="C:\Program Files\OpenSSL" scons \
             target=${{ matrix.target-type }} \
             platform=${{ matrix.target.platform }} \
             arch=${{ matrix.target.arch }} \
