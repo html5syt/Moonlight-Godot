@@ -90,16 +90,29 @@ if platform == "windows":
 elif platform in ("ios", "macos"):
     cmake_base_args += [
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-        "-DUSE_MBEDTLS=ON",  # 强制
+        # "-DUSE_MBEDTLS=ON",  # 强制
         "-B", static_build_dir
     ]
     
     if platform == "macos":
-        actual_arch = arch if arch != "universal" else "arm64"
+        actual_arch = "arm64"
         cmake_base_args += [f"-DCMAKE_OSX_ARCHITECTURES={actual_arch}"]
     else:  # ios
         cmake_base_args += ["-DCMAKE_SYSTEM_NAME=iOS"]
 
+    ret = subprocess.run(cmake_base_args, env=os.environ)
+    if ret.returncode != 0:
+        sys.exit("CMake configure failed")
+    ret = subprocess.run(["cmake", "--build", static_build_dir, "--config", build_type], env=os.environ)
+    if ret.returncode != 0:
+        sys.exit("Static build failed")
+
+elif platform == "android":
+    cmake_base_args += [
+        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+        # "-DUSE_MBEDTLS=ON",  # 强制
+        "-B", static_build_dir
+    ]
     ret = subprocess.run(cmake_base_args, env=os.environ)
     if ret.returncode != 0:
         sys.exit("CMake configure failed")
