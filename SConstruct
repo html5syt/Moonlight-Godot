@@ -59,7 +59,7 @@ cmake_base_args = [
 ]
 
 if platform == "windows":
-    cmake_base_args += ["-A", "x64" if arch == "x86_64" else "Win32"]
+    cmake_base_args += ["-A", "x64"]
     cmake_base_args += ["-DCMAKE_C_FLAGS=/wd5287"]  # 抑制 ENet 警告
 
 # === 构建静态库 ===
