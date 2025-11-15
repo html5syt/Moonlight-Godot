@@ -35,7 +35,16 @@ target = ARGUMENTS.get("target", "template_debug")
 is_debug = target in ("editor", "template_debug")
 build_type = "Debug" if is_debug else "Release"
 
+# === 决定是否使用 mbedTLS ===
+if platform == "windows":
+    # Windows: 尊重用户选择，但默认使用 OpenSSL（即 use_mbedtls=false）
+    use_mbedtls = ARGUMENTS.get("use_mbedtls", "false").lower() in ("1", "true")
+else:
+    # 其他平台：强制使用 mbedTLS，忽略用户输入
+    use_mbedtls = True
+
 print(f"[Info] Building for platform={platform}, arch={arch}, target={target}")
+print(f"[Info] use_mbedtls={use_mbedtls}")
 
 # === 构建目录（仅 static）===
 static_build_dir = f"{build_root}/moonlight-static-{platform}-{arch}-{build_type}"
@@ -51,14 +60,24 @@ cmake_base_args = [
 
 # === 平台特定 CMake 配置与构建 ===
 if platform == "windows":
-    cmake_base_args += ["-A", "x64"]
+    if not use_mbedtls:
+        # 必须提供 OPENSSL_ROOT_DIR
+        openssl_root = os.environ.get("OPENSSL_ROOT_DIR")
+        if not openssl_root:
+            sys.exit("ERROR: OPENSSL_ROOT_DIR must be set when building Windows with OpenSSL (use_mbedtls=false).")
+
+    cmake_base_args += ["-A", "x64" if arch == "x86_64" else "ARM64"]
     rt_flag = "/MDd" if is_debug else "/MD"
-    # 尽可能传递 /MDd（即使 moonlight-common-c 只读，也尝试）
     cmake_base_args += [
-        f"-DCMAKE_C_FLAGS={rt_flag} /wd5287",
+        f"-DCMAKE_C_FLAGS={rt_flag}",
         f"-DCMAKE_CXX_FLAGS={rt_flag}",
+        f"-DUSE_MBEDTLS={'ON' if use_mbedtls else 'OFF'}",
         "-B", static_build_dir
     ]
+
+    if not use_mbedtls:
+        # 传递 OpenSSL 根路径给 CMake
+        cmake_base_args += [f"-DOPENSSL_ROOT_DIR={openssl_root}"]
 
     ret = subprocess.run(cmake_base_args, env=os.environ)
     if ret.returncode != 0:
@@ -68,13 +87,16 @@ if platform == "windows":
     if ret.returncode != 0:
         sys.exit(f"Static build failed ({ret.returncode})")
 
-elif platform in ("macos", "ios"):
+elif platform in ("ios", "macos"):
     cmake_base_args += [
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+        "-DUSE_MBEDTLS=ON",  # 强制
         "-B", static_build_dir
     ]
+    
     if platform == "macos":
-        cmake_base_args += [f"-DCMAKE_OSX_ARCHITECTURES={arch}"]
+        actual_arch = arch if arch != "universal" else "arm64"
+        cmake_base_args += [f"-DCMAKE_OSX_ARCHITECTURES={actual_arch}"]
     else:  # ios
         cmake_base_args += ["-DCMAKE_SYSTEM_NAME=iOS"]
 
@@ -85,9 +107,10 @@ elif platform in ("macos", "ios"):
     if ret.returncode != 0:
         sys.exit("Static build failed")
 
-else:  # linux, android, etc.
+else:  # linux, android
     cmake_base_args += [
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+        "-DUSE_MBEDTLS=ON",  # 强制
         "-B", static_build_dir
     ]
     ret = subprocess.run(cmake_base_args, env=os.environ)
@@ -104,7 +127,7 @@ if platform == "windows":
 elif platform in ("macos", "ios"):
     static_lib_dir = static_build_dir
     static_lib_name = "libmoonlight-common-c.a"
-else:  # linux, android
+else:
     static_lib_dir = static_build_dir
     static_lib_name = "libmoonlight-common-c.a"
 
@@ -117,84 +140,60 @@ env = SConscript(os.path.join(godot_cpp_path, "SConstruct"), {"env": env, "custo
 
 # === 平台特定链接配置 ===
 if platform == "windows":
-    # ✅ 正确处理 CRT 冲突（关键修复！）
     if is_debug:
-        # Debug: 使用 MSVCRTD，禁止静态 CRT 库
         env.Append(LINKFLAGS=["/NODEFAULTLIB:LIBCMTD", "/NODEFAULTLIB:LIBCMT"])
     else:
-        # Release: 使用 MSVCRT，禁止静态 CRT 库
         env.Append(LINKFLAGS=["/NODEFAULTLIB:LIBCMT", "/NODEFAULTLIB:LIBCMTD"])
 
-    openssl_root = os.environ.get("OPENSSL_ROOT_DIR")
-    if not openssl_root:
-        raise Exception("Environment variable OPENSSL_ROOT_DIR is not set!")
-
-    crt_subdir = "MDd" if is_debug else "MD"
-    openssl_lib_dir = os.path.join(openssl_root, "lib", "VC", "x64", crt_subdir)
     enet_lib_dir = os.path.join(static_build_dir, "enet", build_type)
+    libs = ["moonlight-common-c", "enet", "ws2_32", "winmm", "crypt32", "advapi32"]
+    
+    if not use_mbedtls:
+        # 链接 OpenSSL
+        crt_subdir = "MDd" if is_debug else "MD"
+        openssl_lib_dir = os.path.join(os.environ["OPENSSL_ROOT_DIR"], "lib", "VC", "x64" if arch == "x86_64" else "arm64", crt_subdir)
+        env.Append(LIBPATH=[openssl_lib_dir])
+        libs.extend(["libcrypto", "libssl"])  # 注意：Windows 下是 libcrypto.lib / libssl.lib
 
     env.Append(
-        LIBPATH=[static_lib_dir, enet_lib_dir, openssl_lib_dir],
-        LIBS=[
-            "moonlight-common-c",
-            "enet",
-            "libcrypto",
-            "ws2_32",
-            "winmm",
-            "crypt32",
-            "advapi32",
-        ]
+        LIBPATH=[static_lib_dir, enet_lib_dir],
+        LIBS=libs
     )
 
 elif platform == "linux":
-    env.Append(
-        LIBPATH=[static_lib_dir],
-        LIBS=["moonlight-common-c", "ssl", "crypto", "m", "pthread"]
-    )
+    env.Append(LIBPATH=[static_lib_dir], LIBS=["moonlight-common-c", "m", "pthread"])
 
 elif platform == "android":
-    env.Append(
-        LIBPATH=[static_lib_dir],
-        LIBS=["moonlight-common-c", "ssl", "crypto"]
-    )
+    env.Append(LIBPATH=[static_lib_dir], LIBS=["moonlight-common-c"])
 
 elif platform == "macos":
-    env.Append(
-        LIBPATH=[static_lib_dir],
-        LIBS=["moonlight-common-c"],
-        FRAMEWORKS=["Security", "CoreFoundation"]
-    )
+    env.Append(LIBPATH=[static_lib_dir], LIBS=["moonlight-common-c"], FRAMEWORKS=["Security", "CoreFoundation"])
 
 elif platform == "ios":
-    env.Append(
-        LIBPATH=[static_lib_dir],
-        LIBS=["moonlight-common-c"]
-    )
+    env.Append(LIBPATH=[static_lib_dir], LIBS=["moonlight-common-c"])
 
 # === 源码与头文件 ===
 env.Append(CPPPATH=["src/"])
 sources = Glob("src/*.cpp")
 sources.extend(Glob("src/*/*.cpp"))
 
-# === ✅ 新增：GDExtension 文档支持（Godot 4.3+）===
-# if env["target"] in ["editor", "template_debug"]:
-try:
-    doc_data = env.GodotCPPDocData("src/gen/doc_data.gen.cpp", source=Glob("doc_classes/*.xml"))
-    sources.append(doc_data)
-except AttributeError:
-    print("Not including class reference as we're targeting a pre-4.3 baseline.")
-        
+# === GDExtension 文档支持（Godot 4.3+）===
+if env["target"] in ["editor", "template_debug"]:
+    try:
+        doc_data = env.GodotCPPDocData("src/gen/doc_data.gen.cpp", source=Glob("doc_classes/*.xml"))
+        sources.append(doc_data)
+    except AttributeError:
+        print("Not including class reference as we're targeting a pre-4.3 baseline.")
+
 # === 构建 GDExtension ===
 suffix = env["suffix"].replace(".dev", "").replace(".universal", "")
 plugin_filename = f"{libname}{suffix}{env['SHLIBSUFFIX']}"
 output_path = f"bin/{platform}/{plugin_filename}"
 
 library = env.SharedLibrary(target=output_path, source=sources)
-
-# === 依赖静态库 ===
 Depends(library, static_lib_full)
 
-# === 可选：复制到 demo 项目 ===
+# === 复制到 demo ===
 demo_plugin_dir = f"{projectdir}/bin/{platform}"
 demo_copy = env.Install(demo_plugin_dir, library)
 Default(demo_copy)
