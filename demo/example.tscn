@@ -5,6 +5,14 @@
 [node name="Node" type="Node"]
 script = ExtResource("1_jdh55")
 
-[node name="MoonlightStream" type="MoonlightStream" parent="."]
+[node name="Container" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="MoonlightStream" type="MoonlightStream" parent="Container"]
 host_address = "127.0.0.1"
 app_id = 1
