@@ -87,18 +87,14 @@ if platform == "windows":
     if ret.returncode != 0:
         sys.exit(f"Static build failed ({ret.returncode})")
 
-elif platform in ("ios", "macos"):
+elif platform == "ios":
     cmake_base_args += [
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-        # "-DUSE_MBEDTLS=ON",  # 强制
+        "-DUSE_MBEDTLS=ON",  # 强制
         "-B", static_build_dir
     ]
     
-    if platform == "macos":
-        actual_arch = "arm64"
-        cmake_base_args += [f"-DCMAKE_OSX_ARCHITECTURES={actual_arch}"]
-    else:  # ios
-        cmake_base_args += ["-DCMAKE_SYSTEM_NAME=iOS"]
+    cmake_base_args += ["-DCMAKE_SYSTEM_NAME=iOS"]
 
     ret = subprocess.run(cmake_base_args, env=os.environ)
     if ret.returncode != 0:
@@ -106,21 +102,89 @@ elif platform in ("ios", "macos"):
     ret = subprocess.run(["cmake", "--build", static_build_dir, "--config", build_type], env=os.environ)
     if ret.returncode != 0:
         sys.exit("Static build failed")
+        
+        
+elif platform == "macos":
+    if arch == "universal":
+        # 分别构建 x86_64 和 arm64
+        build_dirs = []
+        for subarch in ["x86_64", "arm64"]:
+            subdir = f"{build_root}/moonlight-static-macos-{subarch}-{build_type}"
+            Path(subdir).mkdir(parents=True, exist_ok=True)
+            cmake_args = [
+                "cmake",
+                "-S", str(moonlight_src),
+                "-B", subdir,
+                f"-DCMAKE_BUILD_TYPE={build_type}",
+                "-DBUILD_SHARED_LIBS=OFF",
+                "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+                "-DUSE_MBEDTLS=ON",
+                f"-DCMAKE_OSX_ARCHITECTURES={subarch}",
+            ]
+            ret = subprocess.run(cmake_args, env=os.environ)
+            if ret.returncode != 0:
+                sys.exit(f"CMake configure failed for {subarch}")
+            ret = subprocess.run(["cmake", "--build", subdir, "--config", build_type], env=os.environ)
+            if ret.returncode != 0:
+                sys.exit(f"Build failed for {subarch}")
+            build_dirs.append(subdir)
 
+        # 合并成 universal 库
+        lib_x86 = os.path.join(build_dirs[0], "libmoonlight-common-c.a")
+        lib_arm = os.path.join(build_dirs[1], "libmoonlight-common-c.a")
+        final_lib = os.path.join(static_build_dir, "libmoonlight-common-c.a")
+        ret = subprocess.run(["lipo", "-create", "-output", final_lib, lib_x86, lib_arm])
+        if ret.returncode != 0:
+            sys.exit("Failed to create universal library with lipo")
+    else:
+        # 单架构
+        cmake_base_args += [
+            "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+            "-DUSE_MBEDTLS=ON",
+            f"-DCMAKE_OSX_ARCHITECTURES={arch}",
+            "-B", static_build_dir
+        ]
+        ret = subprocess.run(cmake_base_args, env=os.environ)
+        if ret.returncode != 0:
+            sys.exit("CMake configure failed")
+        ret = subprocess.run(["cmake", "--build", static_build_dir, "--config", build_type], env=os.environ)
+        if ret.returncode != 0:
+            sys.exit("Static build failed")
+            
 elif platform == "android":
+    # ndk_root = os.environ.get("ANDROID_NDK_ROOT")
+    # if not ndk_root:
+    #     sys.exit("ERROR: ANDROID_NDK_ROOT must be set for Android builds.")
+
+    # 根据 arch 映射 ABI
+    abi_map = {
+        "arm64": "arm64-v8a",
+        "arm32": "armeabi-v7a",
+        "x86": "x86",
+        "x86_64": "x86_64"
+    }
+    android_abi = abi_map.get(arch)
+    if not android_abi:
+        sys.exit(f"Unsupported Android arch: {arch}")
+
     cmake_base_args += [
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-        # "-DUSE_MBEDTLS=ON",  # 强制
-        "-B", static_build_dir
+        "-DUSE_MBEDTLS=ON",
+        "-B", static_build_dir,
+        # f"-DCMAKE_TOOLCHAIN_FILE={ndk_root}/build/cmake/android.toolchain.cmake",
+        f"-DANDROID_ABI={android_abi}",
+        "-DANDROID_PLATFORM=21",  # 最低 API，根据需要调整
+        "-DANDROID_STL=c++_shared"
     ]
+
     ret = subprocess.run(cmake_base_args, env=os.environ)
     if ret.returncode != 0:
-        sys.exit("CMake configure failed")
+        sys.exit("CMake configure failed for Android")
     ret = subprocess.run(["cmake", "--build", static_build_dir, "--config", build_type], env=os.environ)
     if ret.returncode != 0:
-        sys.exit("Static build failed")
-
-else:  # linux, android
+        sys.exit("Android static build failed")
+        
+else:  # linux
     cmake_base_args += [
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
         "-DUSE_MBEDTLS=ON",  # 强制
