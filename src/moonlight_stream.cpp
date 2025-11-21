@@ -1,13 +1,4 @@
 #include "moonlight_stream.h"
-#include "godot_cpp/core/class_db.hpp"
-#include "godot_cpp/variant/utility_functions.hpp"
-#include "godot_cpp/classes/rendering_server.hpp"
-#include "godot_cpp/classes/image.hpp"
-#include "godot_cpp/classes/engine.hpp"
-#include <map>
-#include <cstring>
-#include <cstdint>
-#include <mutex>
 
 // Static map for context -> instance
 std::map<void*, MoonlightStream*> MoonlightStream::instance_map;
@@ -77,8 +68,6 @@ static int ar_init(int audio_configuration, const POPUS_MULTISTREAM_CONFIGURATIO
 }
 
 static void ar_decode_and_play_sample(char* sample_data, int sample_length) {
-    // Note: Audio is played on all active streams (as before)
-    // This may need refinement if multi-stream audio isolation is required.
     for (auto& pair : MoonlightStream::instance_map) {
         MoonlightStream* self = pair.second;
         if (self && self->audio_playback.is_valid()) {
@@ -94,8 +83,7 @@ static void ar_decode_and_play_sample(char* sample_data, int sample_length) {
                 write_ptr[i] = Vector2(left, right);
             }
             self->audio_playback->push_buffer(buffer);
-            return; // Only play on first valid stream? Or break after one?
-            // TODO: Consider whether audio should be broadcast or per-stream.
+            return;
         }
     }
 }
@@ -110,7 +98,10 @@ void MoonlightStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_server_app_version"), &MoonlightStream::get_server_app_version);
     ClassDB::bind_method(D_METHOD("set_server_codec_mode_support", "support"), &MoonlightStream::set_server_codec_mode_support);
     ClassDB::bind_method(D_METHOD("get_server_codec_mode_support"), &MoonlightStream::get_server_codec_mode_support);
+    ClassDB::bind_method(D_METHOD("set_server_rtsp_session_url", "url"), &MoonlightStream::set_server_rtsp_session_url);
+    ClassDB::bind_method(D_METHOD("get_server_rtsp_session_url"), &MoonlightStream::get_server_rtsp_session_url);
     ClassDB::bind_method(D_METHOD("set_resolution", "width", "height"), &MoonlightStream::set_resolution);
+    ClassDB::bind_method(D_METHOD("get_resolution"), &MoonlightStream::get_resolution);
     ClassDB::bind_method(D_METHOD("set_fps", "fps"), &MoonlightStream::set_fps);
     ClassDB::bind_method(D_METHOD("get_fps"), &MoonlightStream::get_fps);
     ClassDB::bind_method(D_METHOD("set_bitrate_kbps", "bitrate_kbps"), &MoonlightStream::set_bitrate_kbps);
@@ -127,11 +118,14 @@ void MoonlightStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("send_mouse_button_event", "button", "pressed"), &MoonlightStream::send_mouse_button_event);
     ClassDB::bind_method(D_METHOD("send_mouse_move_event", "x", "y"), &MoonlightStream::send_mouse_move_event);
     ClassDB::bind_method(D_METHOD("send_key_event", "scancode", "pressed"), &MoonlightStream::send_key_event);
+    ClassDB::bind_method(D_METHOD("set_remote_input_aes_key", "key"), &MoonlightStream::set_remote_input_aes_key);
+    ClassDB::bind_method(D_METHOD("set_remote_input_aes_iv", "iv"), &MoonlightStream::set_remote_input_aes_iv);
 
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "host_address"), "set_host_address", "get_host_address");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "app_id"), "set_app_id", "get_app_id");
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "server_app_version"), "set_server_app_version", "get_server_app_version");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "server_codec_mode_support"), "set_server_codec_mode_support", "get_server_codec_mode_support");
+    ADD_PROPERTY(PropertyInfo(Variant::STRING, "server_rtsp_session_url"), "set_server_rtsp_session_url", "get_server_rtsp_session_url");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "fps", PROPERTY_HINT_RANGE, "10,120,1"), "set_fps", "get_fps");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "bitrate_kbps", PROPERTY_HINT_RANGE, "500,100000,1"), "set_bitrate_kbps", "get_bitrate_kbps");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "video_codec", PROPERTY_HINT_ENUM, "H264,HEVC,AV1"), "set_video_codec", "get_video_codec");
@@ -150,7 +144,6 @@ void MoonlightStream::_bind_methods() {
 MoonlightStream::MoonlightStream() {
     void* render_context = this;
     instance_map[render_context] = this;
-
     viewport = memnew(SubViewport);
     viewport->set_name("VideoViewport");
     viewport->set_size(Size2i(width, height));
@@ -183,22 +176,42 @@ void MoonlightStream::set_resolution(int p_width, int p_height) {
 bool MoonlightStream::start_connection() {
     if (streaming) return false;
 
-    if (server_app_version.is_empty()) {
-        UtilityFunctions::push_error("server_app_version must be set!");
+    // === 新增：强制验证用户提供的密钥 ===
+    if (custom_aes_key.is_empty() || custom_aes_key.size() != 16) {
+        UtilityFunctions::push_error("MoonlightStream: Custom AES key is missing or invalid. It must be exactly 16 bytes.");
         return false;
     }
+
+    if (custom_aes_iv.is_empty() || custom_aes_iv.size() < 4) {
+        UtilityFunctions::push_error("MoonlightStream: Custom AES IV is missing or invalid. It must be at least 4 bytes long.");
+        return false;
+    }
+    // === 验证结束 ===
+
+    if (server_app_version.is_empty()) {
+        UtilityFunctions::push_error("server_app_version must be set! (from /serverinfo)");
+        return false;
+    }
+
     if (server_codec_mode_support == 0) {
-        UtilityFunctions::push_error("server_codec_mode_support must be set (non-zero)!");
+        UtilityFunctions::push_error("server_codec_mode_support must be set (non-zero)! (from /serverinfo)");
         return false;
     }
 
     CharString host_str = host_address.utf8();
     CharString app_version_str = server_app_version.utf8();
+    CharString rtsp_url_str = server_rtsp_session_url.utf8();
 
     SERVER_INFORMATION server_info = {};
     server_info.address = host_str.get_data();
     server_info.serverInfoAppVersion = app_version_str.get_data();
     server_info.serverCodecModeSupport = server_codec_mode_support;
+
+    if (!server_rtsp_session_url.is_empty()) {
+        server_info.rtspSessionUrl = rtsp_url_str.get_data();
+    } else {
+        server_info.rtspSessionUrl = nullptr;
+    }
 
     STREAM_CONFIGURATION stream_config = {};
     stream_config.width = width;
@@ -212,10 +225,16 @@ bool MoonlightStream::start_connection() {
     stream_config.colorSpace = static_cast<int>(color_space);
     stream_config.colorRange = enable_hdr ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
 
+    // === 新增：直接使用用户提供的密钥 ===
+    memcpy(stream_config.remoteInputAesKey, custom_aes_key.ptr(), 16);
+    memcpy(stream_config.remoteInputAesIv, custom_aes_iv.ptr(), 4);
+    memset(stream_config.remoteInputAesIv + 4, 0, 12); // Clear unused part of IV
+    // === 密钥设置完成 ===
+
     DECODER_RENDERER_CALLBACKS dr_callbacks = {};
     dr_callbacks.setup = dr_setup;
     dr_callbacks.submitDecodeUnit = dr_submit_decode_unit;
-    dr_callbacks.cleanup = dr_cleanup; // Added cleanup
+    dr_callbacks.cleanup = dr_cleanup;
     dr_callbacks.capabilities = CAPABILITY_DIRECT_SUBMIT;
 
     AUDIO_RENDERER_CALLBACKS ar_callbacks = {};
@@ -237,9 +256,9 @@ bool MoonlightStream::start_connection() {
         &cl_callbacks,
         &dr_callbacks,
         &ar_callbacks,
-        render_context,  // drContext → passed to dr_setup as 'context'
+        render_context,
         0,
-        render_context,  // arContext → passed to ar_init as 'context'
+        render_context,
         0
     );
 
@@ -270,7 +289,6 @@ int MoonlightStream::_on_submit_decode_unit(PDECODE_UNIT decode_unit) {
     size_t total_expected = y_size + uv_size * 2;
     uint8_t* full_buffer = new uint8_t[total_expected];
     size_t offset = 0;
-
     PLENTRY entry = decode_unit->bufferList;
     while (entry && offset < total_expected) {
         size_t len = (offset + entry->length <= total_expected) ? entry->length : (total_expected - offset);
@@ -287,7 +305,6 @@ int MoonlightStream::_on_submit_decode_unit(PDECODE_UNIT decode_unit) {
     const uint8_t* y = full_buffer;
     const uint8_t* u = full_buffer + y_size;
     const uint8_t* v = full_buffer + y_size + uv_size;
-
     size_t rgba_size = width * height * 4;
     uint8_t* rgba = new uint8_t[rgba_size];
     yuv420p_to_rgba(y, u, v, rgba, width, height);
@@ -332,4 +349,13 @@ void MoonlightStream::send_mouse_move_event(float x, float y) {
 
 void MoonlightStream::send_key_event(int scancode, bool pressed) {
     if (streaming) LiSendKeyboardEvent(static_cast<short>(scancode), pressed ? KEY_ACTION_DOWN : KEY_ACTION_UP, 0);
+}
+
+// Setter implementations
+void MoonlightStream::set_remote_input_aes_key(const PackedByteArray &p_key) {
+    custom_aes_key = p_key;
+}
+
+void MoonlightStream::set_remote_input_aes_iv(const PackedByteArray &p_iv) {
+    custom_aes_iv = p_iv;
 }

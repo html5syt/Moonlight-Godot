@@ -271,7 +271,7 @@ library = env.SharedLibrary(target=output_path, source=sources)
 Depends(library, static_lib_full)
 
 # === 复制到 demo ===
-demo_plugin_dir = f"{projectdir}/bin/{platform}"
+demo_plugin_dir = f"{projectdir}/addons/{libname}/bin/{platform}"
 demo_copy = env.Install(demo_plugin_dir, library)
 Default(demo_copy)
 

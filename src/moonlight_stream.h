@@ -5,6 +5,10 @@
 #include "godot_cpp/classes/audio_stream_generator.hpp"
 #include "godot_cpp/classes/audio_stream_generator_playback.hpp"
 #include "godot_cpp/variant/packed_byte_array.hpp"
+#include "godot_cpp/core/class_db.hpp"
+#include "godot_cpp/variant/utility_functions.hpp"
+#include "godot_cpp/classes/rendering_server.hpp"
+#include "godot_cpp/classes/image.hpp"
 
 extern "C" {
 #include "lib/moonlight-common-c/src/Limelight.h"
@@ -12,6 +16,8 @@ extern "C" {
 
 #include <map>
 #include <mutex>
+#include <cstring>
+#include <cstdint>
 
 using namespace godot;
 
@@ -45,29 +51,47 @@ private:
     ColorSpace color_space = COLOR_SPACE_REC_709;
     bool enable_hdr = false;
 
-    // === 新增：服务器信息（由用户从 /serverinfo 提供）===
-    String server_app_version;           // 来自 /serverinfo 的 appversion
-    int server_codec_mode_support = 0;   // 来自 /serverinfo 的 ServerCodecModeSupport
+    // === 来自 /serverinfo ===
+    String server_app_version;
+    int server_codec_mode_support = 0;
+
+    // === 来自 /launch (sessionUrl0) ===
+    String server_rtsp_session_url;
 
     SubViewport* viewport = nullptr;
     RID texture_rid;
-
 
     // Frame queue (decoder thread → main thread)
     PackedByteArray pending_frame;
     bool has_pending_frame = false;
     mutable std::mutex frame_mutex;
 
-
+    // User-provided encryption keys for the remote input stream.
+    // These are mandatory and must be set before calling `start_connection`.
+    godot::PackedByteArray custom_aes_key; // Must be exactly 16 bytes.
+    godot::PackedByteArray custom_aes_iv;  // Must be at least 4 bytes.
 
 public:
     MoonlightStream();
     ~MoonlightStream() override;
-    // Static map for context → instance
+
     static std::map<void*, MoonlightStream*> instance_map;
+
     // Audio
     Ref<AudioStreamGenerator> audio_stream;
     Ref<AudioStreamGeneratorPlayback> audio_playback;
+
+    /// Sets the custom AES key for remote input encryption.
+    /// This is a required parameter for establishing a connection.
+    /// The key must be exactly 16 bytes long.
+    void set_remote_input_aes_key(const godot::PackedByteArray &p_key);
+
+    /// Sets the custom AES IV for remote input encryption.
+    /// This is a required parameter for establishing a connection.
+    /// Only the first 4 bytes are used as the key ID (`rikeyid`).
+    /// The array must be at least 4 bytes long.
+    void set_remote_input_aes_iv(const godot::PackedByteArray &p_iv);
+
     // Properties
     void set_host_address(const String& p_host) { host_address = p_host; }
     String get_host_address() const { return host_address; }
@@ -81,8 +105,11 @@ public:
     void set_server_codec_mode_support(int p_support) { server_codec_mode_support = p_support; }
     int get_server_codec_mode_support() const { return server_codec_mode_support; }
 
+    void set_server_rtsp_session_url(const String& p_url) { server_rtsp_session_url = p_url; }
+    String get_server_rtsp_session_url() const { return server_rtsp_session_url; }
+
     void set_resolution(int p_width, int p_height);
-    void get_resolution(int& r_width, int& r_height) const { r_width = width; r_height = height; }
+    Vector2i get_resolution() const { return Vector2i(width, height); }
 
     void set_fps(int p_fps) { fps = p_fps; }
     int get_fps() const { return fps; }
@@ -100,7 +127,6 @@ public:
     bool get_enable_hdr() const { return enable_hdr; }
 
     bool is_streaming() const { return streaming; }
-
     Ref<AudioStreamGenerator> get_audio_stream() const { return audio_stream; }
 
     // Control
