@@ -61,4 +61,5 @@ text = "stop"
 
 [connection signal="text_changed" from="GridContainer/LineEdit" to="." method="ip_set"]
 [connection signal="text_changed" from="GridContainer/LineEdit3" to="." method="pin_set"]
+[connection signal="pressed" from="GridContainer/Button" to="." method="pair"]
 [connection signal="text_changed" from="GridContainer/LineEdit2" to="." method="appid_set"]

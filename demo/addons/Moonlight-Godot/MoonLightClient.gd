@@ -1,20 +1,20 @@
 extends Node
-class_name MoonlightClient
+class_name MoonLightClient
 
 ## 配置常量
 const CLIENT_CERT_PATH = "user://addons/moonlight-godot/client.pem"
 const CLIENT_KEY_PATH = "user://addons/moonlight-godot/client.key"
 const DEFAULT_SERVER_PORT = 47984
-const DEFAULT_APP_VERSION = "3.20.3.70" ## Default version, can be updated
+const DEFAULT_APP_VERSION = "3.20.3.70"
 
 ## 配对状态
-enum PairingState {NOT_STARTED,IN_PROGRESS,SUCCESS,FAILED,CERT_GENERATED}
+enum PairingState {NOT_STARTED, IN_PROGRESS, SUCCESS, FAILED, CERT_GENERATED}
 
 ## 连接状态
-enum ConnectionState {DISCONNECTED,CONNECTING,CONNECTED,DISCONNECTING}
+enum ConnectionState {DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING}
 
 ## 服务端状态
-enum ServerState {SERVER_READY,SERVER_BUSY,SERVER_OFFLINE}
+enum ServerState {SERVER_READY, SERVER_BUSY, SERVER_OFFLINE}
 
 ## 应用信息
 class AppInfo:
@@ -38,563 +38,333 @@ class ServerInfo:
     var gfe_version: String = ""
     var pair_status: int = 0
 
-## 用于处理配对过程的内部状态
+## 内部状态
 var pairing_state: PairingState = PairingState.NOT_STARTED
 var connection_state: ConnectionState = ConnectionState.DISCONNECTED
 var server_info: ServerInfo = ServerInfo.new()
 
-## 用于存储证书和密钥
+## 证书与密钥
 var client_cert: String = ""
 var client_key: String = ""
 
-## 用于存储已获取的应用列表
+## 应用列表等
 @export var app_list: Array = []
-
-## 用于存储MoonlightStream实例
 var moonlight_stream: MoonlightStream = null
-
-## 用于存储当前会话信息
-var current_session: SessionInfo = null
-
-## 用于存储当前应用ID
+var current_session: SessionInfo = SessionInfo.new()
 @export var current_app_id: int = 0
-
-## 用于存储当前应用的封面图
 var current_app_asset: Texture = null
-
-## 用于存储错误消息
 var error_message: String = ""
-
-## 用于存储配对进度
 var pairing_progress: int = 0
-
-## 用于存储配对PIN
 var pairing_pin: String = ""
-
-## 用于存储配对的随机盐
-var pairing_salt: String = ""
-
-## 用于存储配对的AES密钥
-var pairing_aes_key: String = ""
-
-## 用于存储配对的客户端随机密钥
-var pairing_client_secret: String = ""
-
-## 用于存储配对的服务器签名
-var pairing_server_signature: String = ""
-
-## 用于存储配对的服务器证书
+var pairing_salt: PackedByteArray = []
+var pairing_aes_key: PackedByteArray = []
+var pairing_client_secret: PackedByteArray = []
+var pairing_server_signature: PackedByteArray = []
 var pairing_server_cert: String = ""
-
-## 用于存储配对的服务器响应
 var pairing_server_response: String = ""
-
-## 用于存储配对的客户端响应
 var pairing_client_response: String = ""
-
-## 用于存储配对的挑战
-var pairing_challenge: String = ""
-
-## 用于存储配对的挑战响应
-var pairing_challenge_response: String = ""
-
-## 用于存储配对的配对密钥
-var pairing_pairing_secret: String = ""
-
-## 用于存储配对的客户端配对密钥
-var pairing_client_pairing_secret: String = ""
-
-## 用于存储配对的最终响应
+var pairing_challenge: PackedByteArray = []
+var pairing_challenge_response: PackedByteArray = []
+var pairing_pairing_secret: PackedByteArray = []
+var pairing_client_pairing_secret: PackedByteArray = []
 var pairing_final_response: String = ""
-
-## 用于存储配对的最终状态
 var pairing_final_state: bool = false
 
-## 存储服务端IP
 @export var server_ip: String = "localhost"
 
 func _init():
-    ## 初始化时检查证书
-    _load_client_certificate()
-    ## 创建目录
     var dir = DirAccess.open("user://addons/moonlight-godot")
     if not dir:
         dir = DirAccess.open("user://")
         dir.make_dir_recursive("user://addons/moonlight-godot")
-    ## 设置默认值
+    _load_client_certificate()
     pairing_state = PairingState.NOT_STARTED
     connection_state = ConnectionState.DISCONNECTED
 
 func _load_client_certificate() -> void:
-    ## 检查并加载客户端证书，如果不存在则生成新证书
     var cert = X509Certificate.new()
     var key = CryptoKey.new()
-    
-    ## 尝试加载证书
-    var cert_error = cert.load(CLIENT_CERT_PATH)
-    if cert_error != OK:
-        ## 证书不存在，生成新证书
+    if cert.load(CLIENT_CERT_PATH) != OK or key.load(CLIENT_KEY_PATH) != OK:
         _generate_client_certificate()
         return
-    
-    ## 尝试加载密钥
-    var key_error = key.load(CLIENT_KEY_PATH)
-    if key_error != OK:
-        ## 密钥不存在，生成新证书
-        _generate_client_certificate()
-        return
-    
-    ## 保存加载的证书和密钥
     client_cert = cert.save_to_string()
     client_key = key.save_to_string()
-    
     pairing_state = PairingState.CERT_GENERATED
     error_message = "Loaded existing client certificate"
 
 func _generate_client_certificate() -> void:
-    ## 生成新的客户端证书和密钥
     var crypto = Crypto.new()
-    ## 生成RSA密钥
     var key = crypto.generate_rsa(2048)
-    ## 生成自签名证书
     var cert = crypto.generate_self_signed_certificate(key, "CN=NVIDIA GameStream Client")
-    
-    ## 保存证书和密钥
     _save_certificate(cert, key)
-    
-    ## 更新状态
-    pairing_state = PairingState.CERT_GENERATED
-    error_message = "Generated new client certificate"
 
 func _save_certificate(cert: X509Certificate, key: CryptoKey) -> void:
-    ## 保存证书和密钥到文件
-    ## 保存证书
-    var cert_error = cert.save(CLIENT_CERT_PATH)
-    if cert_error != OK:
-        error_message = "Failed to save certificate: " + str(cert_error)
+    if cert.save(CLIENT_CERT_PATH) != OK or key.save(CLIENT_KEY_PATH) != OK:
+        error_message = "Failed to save certificate or key"
         return
-    
-    ## 保存密钥
-    var key_error = key.save(CLIENT_KEY_PATH)
-    if key_error != OK:
-        error_message = "Failed to save key: " + str(key_error)
-        return
-    
-    ## 更新状态
     pairing_state = PairingState.CERT_GENERATED
     error_message = "Certificate and key saved successfully"
 
+# ==================== 配对流程（修正版） ====================
+
 func pair_with_server(pin: String) -> bool:
-    ## 执行配对流程，返回是否成功
     if pairing_state == PairingState.SUCCESS:
         error_message = "Already paired with server"
         return false
     pairing_pin = pin
     pairing_state = PairingState.IN_PROGRESS
     pairing_progress = 0
-    
-    ## 阶段1: 获取服务端证书
-    if not _pairing_stage_1():
+
+    if not await _pairing_stage_1():
         error_message = "Failed to get server certificate"
         pairing_state = PairingState.FAILED
         return false
-    
-    ## 阶段2: 发送加密挑战
-    if not _pairing_stage_2():
+
+    if not await _pairing_stage_2():
         error_message = "Failed to send client challenge"
         pairing_state = PairingState.FAILED
         return false
-    
-    ## 阶段3: 响应服务端挑战
-    if not _pairing_stage_3():
+
+    if not await _pairing_stage_3():
         error_message = "Failed to respond to server challenge"
         pairing_state = PairingState.FAILED
         return false
-    
-    ## 阶段4: 提交客户端配对密钥
-    if not _pairing_stage_4():
+
+    if not await _pairing_stage_4():
         error_message = "Failed to submit client pairing secret"
         pairing_state = PairingState.FAILED
         return false
-    
-    ## 阶段5: 最终验证(失败代表服务器未完成配对！)
-    var pair_times = 0
-    while not _pairing_stage_5():
-        if pair_times > 600:
-            error_message = "Failed to complete pairing,server did not respond"
+
+    var attempts = 0
+    while not await _pairing_stage_5():
+        attempts += 1
+        if attempts > 60:
+            error_message = "Pairing timeout"
             pairing_state = PairingState.FAILED
             return false
-        error_message = "Failed to complete pairing,waiting for server to complete..."
-        # pairing_state = PairingState.FAILED
-        # return false
         await get_tree().create_timer(1.0).timeout
-    
+
     pairing_state = PairingState.SUCCESS
     error_message = "Pairing successful"
     return true
 
+func _http_get(url: String) -> Dictionary:
+    var http = HTTPRequest.new()
+    add_child(http)
+    var err = http.request(url)
+    if err != OK:
+        http.queue_free()
+        return {"success": false, "error": str(err)}
+    await http.request_completed
+    var result = {
+        "success": http.get_response_code() == 200,
+        "code": http.get_response_code(),
+        "body": http.get_response_body_as_string()
+    }
+    http.queue_free()
+    return result
+
 func _pairing_stage_1() -> bool:
-    ## 阶段1: 获取服务端证书
     pairing_progress = 1
-    ## 生成随机盐
-    pairing_salt = _generate_random_bytes(16)
+    pairing_salt = Crypto.new().generate_random_bytes(16)
+    var salt_b64 = Marshalls.raw_to_base64(pairing_salt)
+    var cert_b64 = Marshalls.utf8_to_base64(client_cert)
+    var url = "http://%s:%d/pair?phrase=getservercert&devicename=roth&updateState=1&salt=%s&clientcert=%s" % [server_ip, DEFAULT_SERVER_PORT, salt_b64, cert_b64]
     
-    ## 准备请求
-    var url = "http://"+server_ip+":47984/pair?phrase=getservercert&devicename=roth&updateState=1&salt=" + pairing_salt + "&clientcert=" + _encode_base64(client_cert)
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 80
-    if url.startswith("https://"):
-        port = 443
-    var err = http_client.connect_to_host(host, port)
-    
-    if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
+    var resp = await _http_get(url)
+    if not resp.success:
         return false
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
-        return false
-    
-    ## 解析响应
-    var response = http_client.get_response_body_as_string()
+
     var xml = XMLParser.new()
-    var parse_error = xml.parse(response)
-    if parse_error != OK:
-        error_message = "Failed to parse XML: " + str(parse_error)
+    if xml.parse(resp.body) != OK:
         return false
-    
+
     var root = xml.get_node()
-    var paired = root.get_child(0).get_text()
-    if paired != "1":
-        error_message = "Server not paired"
+    if root.get_child_count() < 2:
         return false
-    
+    if root.get_child(0).get_text() != "1":
+        return false
     pairing_server_cert = root.get_child(1).get_text()
     return true
 
+func _derive_aes_key_from_pin(pin: String, salt: PackedByteArray) -> PackedByteArray:
+    var hasher = HashingContext.new()
+    hasher.start(HashingContext.HASH_SHA256)
+    hasher.update((pin).to_utf8_buffer())
+    hasher.update(salt)
+    var hash = hasher.finish()
+    return hash.slice(0, 16)  # AES-128 key
+
+func _encrypt_ecb(data: PackedByteArray, key: PackedByteArray) -> PackedByteArray:
+    # 验证密钥长度：必须为16或32字节
+    assert(key.size() == 16 or key.size() == 32, "Key must be 16 or 32 bytes for AES-128/AES-256.")
+    # 验证数据长度：必须为16的倍数（ECB模式要求）
+    assert(data.size() % 16 == 0, "Data length must be a multiple of 16 bytes in ECB mode.")
+
+    var aes = AESContext.new()
+    var err = aes.start(AESContext.MODE_ECB_ENCRYPT, key)
+    if err != OK:
+        push_error("Failed to start AES ECB encryption.")
+        return PackedByteArray()
+
+    var encrypted = aes.update(data)
+    aes.finish()
+    return encrypted
+
+
+func _decrypt_ecb(data: PackedByteArray, key: PackedByteArray) -> PackedByteArray:
+    # 同样验证密钥和数据长度
+    assert(key.size() == 16 or key.size() == 32, "Key must be 16 or 32 bytes.")
+    assert(data.size() % 16 == 0, "Encrypted data length must be a multiple of 16 bytes.")
+
+    var aes = AESContext.new()
+    var err = aes.start(AESContext.MODE_ECB_DECRYPT, key)
+    if err != OK:
+        push_error("Failed to start AES ECB decryption.")
+        return PackedByteArray()
+
+    var decrypted = aes.update(data)
+    aes.finish()
+    return decrypted
+
 func _pairing_stage_2() -> bool:
-    ## 阶段2: 发送加密挑战
     pairing_progress = 2
-    ## 生成AES密钥
-    pairing_aes_key = _hash_with_pin(pairing_pin)
-    
-    ## 生成随机挑战
-    pairing_challenge = _generate_random_bytes(16)
-    
-    ## 加密挑战
-    var encrypted_challenge = _encrypt_challenge(pairing_challenge, pairing_aes_key)
-    
-    ## 准备请求
-    var url = "http://"+server_ip+":47984/pair?devicename=roth&updateState=1&clientchallenge=" + encrypted_challenge
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 80
-    if url.startswith("https://"):
-        port = 443
-    var err = http_client.connect_to_host(host, port)
-    
-    if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
+    pairing_aes_key = _derive_aes_key_from_pin(pairing_pin, pairing_salt)
+    pairing_challenge = Crypto.new().generate_random_bytes(16)
+    var encrypted = _encrypt_ecb(pairing_challenge, pairing_aes_key)
+    var enc_b64 = Marshalls.raw_to_base64(encrypted)
+    var url = "http://%s:%d/pair?devicename=roth&updateState=1&clientchallenge=%s" % [server_ip, DEFAULT_SERVER_PORT, enc_b64]
+
+    var resp = await _http_get(url)
+    if not resp.success:
         return false
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
-        return false
-    
-    ## 解析响应
-    var response = http_client.get_response_body_as_string()
+
     var xml = XMLParser.new()
-    var parse_error = xml.parse(response)
-    if parse_error != OK:
-        error_message = "Failed to parse XML: " + str(parse_error)
+    if xml.parse(resp.body) != OK:
         return false
-    
+
     var root = xml.get_node()
-    var paired = root.get_child(0).get_text()
-    if paired != "1":
-        error_message = "Server not paired"
+    if root.get_child(0).get_text() != "1":
         return false
-    
-    pairing_challenge_response = root.get_child(1).get_text()
+    pairing_challenge_response = Marshalls.base64_to_raw(root.get_child(1).get_text())
     return true
 
 func _pairing_stage_3() -> bool:
-    ## 阶段3: 响应服务端挑战
     pairing_progress = 3
-    ## 解密挑战响应
-    var decrypted_response = _decrypt_challenge(pairing_challenge_response, pairing_aes_key)
-    
-    ## 提取服务端挑战和签名
-    var server_challenge = decrypted_response.substr(0, 16)
-    var server_signature = decrypted_response.substr(16, 32)
-    
-    ## 生成客户端响应
-    pairing_client_secret = _generate_random_bytes(16)
-    var client_secret_hash = _hash_with_pin(pairing_client_secret)  ## 修复：使用_hash_with_pin()而不是_hash_with_salt()
+    var decrypted = _decrypt_ecb(pairing_challenge_response, pairing_aes_key)
+    if len(decrypted) < 48:
+        return false
+    var server_challenge = decrypted.slice(0, 16)
+    var server_signature = decrypted.slice(16, 48)
+
+    pairing_client_secret = Crypto.new().generate_random_bytes(16)
+    var hasher = HashingContext.new()
+    hasher.start(HashingContext.HASH_SHA256)
+    hasher.update(pairing_client_secret)
+    var client_secret_hash = hasher.finish()
     var client_response = server_challenge + client_secret_hash + server_signature
-    
-    ## 加密客户端响应
-    var encrypted_client_response = _encrypt_challenge(client_response, pairing_aes_key)
-    
-    ## 准备请求
-    var url = "http://"+server_ip+":47984/pair?devicename=roth&updateState=1&serverchallengeresp=" + encrypted_client_response
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 80
-    if url.startswith("https://"):
-        port = 443
-    var err = http_client.connect_to_host(host, port)
-    
-    if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
+    var encrypted_resp = _encrypt_ecb(client_response, pairing_aes_key)
+    var enc_b64 = Marshalls.raw_to_base64(encrypted_resp)
+    var url = "http://%s:%d/pair?devicename=roth&updateState=1&serverchallengeresp=%s" % [server_ip, DEFAULT_SERVER_PORT, enc_b64]
+
+    var resp = await _http_get(url)
+    if not resp.success:
         return false
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
-        return false
-    
-    ## 解析响应
-    var response = http_client.get_response_body_as_string()
+
     var xml = XMLParser.new()
-    var parse_error = xml.parse(response)
-    if parse_error != OK:
-        error_message = "Failed to parse XML: " + str(parse_error)
+    if xml.parse(resp.body) != OK:
         return false
-    
+
     var root = xml.get_node()
-    var paired = root.get_child(0).get_text()
-    if paired != "1":
-        error_message = "Server not paired"
+    if root.get_child(0).get_text() != "1":
         return false
-    
-    pairing_pairing_secret = root.get_child(1).get_text()
-    
-    ## 解析配对密钥
-    var server_secret = pairing_pairing_secret.substr(0, 16)
-    server_signature = pairing_pairing_secret.substr(16, 32)
-    
-    ## 验证签名
-    if not _verify_signature(server_secret, server_signature, pairing_server_cert):
+    pairing_pairing_secret = Marshalls.base64_to_raw(root.get_child(1).get_text())
+
+    var server_secret = pairing_pairing_secret.slice(0, 16)
+    var server_sig = pairing_pairing_secret.slice(16, 48)
+
+    if not _verify_signature(server_secret, server_sig, pairing_server_cert):
         error_message = "MITM detected"
         return false
-    
-    ## 验证PIN
-    var expected_response = _generate_expected_response(server_secret, pairing_server_cert, server_challenge)
-    if expected_response != pairing_challenge_response:
-        error_message = "Incorrect PIN"
-        return false
-    
+
     return true
 
-func _pairing_stage_4() -> bool:
-    ## 阶段4: 提交客户端配对密钥
-    pairing_progress = 4
-    ## 生成客户端配对密钥
-    pairing_client_pairing_secret = pairing_client_secret + _sign_message(pairing_client_secret)
-    
-    ## 准备请求
-    var url = "http://"+server_ip+":47984/pair?devicename=roth&updateState=1&clientpairingsecret=" + _encode_base64(pairing_client_pairing_secret)
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 80
-    if url.startswith("https://"):
-        port = 443
-    var err = http_client.connect_to_host(host, port)
-    
-    if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
+func _verify_signature(data: PackedByteArray, signature: PackedByteArray, cert_pem: String) -> bool:
+    var cert = X509Certificate.new()
+    if cert.load_from_string(cert_pem) != OK:
         return false
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
-        return false
-    
-    ## 解析响应
-    var response = http_client.get_response_body_as_string()
-    var xml = XMLParser.new()
-    var parse_error = xml.parse(response)
-    if parse_error != OK:
-        error_message = "Failed to parse XML: " + str(parse_error)
-        return false
-    
-    var root = xml.get_node()
-    var paired = root.get_child(0).get_text()
-    if paired != "1":
-        error_message = "Server not paired"
-        return false
-    
-    return true
-
-func _pairing_stage_5() -> bool:
-    ## 阶段5: 最终验证
-    pairing_progress = 5
-    ## 准备请求
-    var url = "https://"+server_ip+":47984/pair?devicename=roth&updateState=1&phrase=pairchallenge"
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 443
-    var err = http_client.connect_to_host(host, port)
-    
-    if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
-        return false
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
-        return false
-    
-    ## 解析响应
-    var response = http_client.get_response_body_as_string()
-    var xml = XMLParser.new()
-    var parse_error = xml.parse(response)
-    if parse_error != OK:
-        error_message = "Failed to parse XML: " + str(parse_error)
-        return false
-    
-    var root = xml.get_node()
-    var paired = root.get_child(0).get_text()
-    if paired != "1":
-        error_message = "Server not paired"
-        return false
-    
-    pairing_final_state = true
-    return true
-
-func _hash_with_pin(pin: String) -> String:
-    ## 使用SHA-256哈希PIN和盐
-    return _hash(pin + pairing_salt)
-
-func _hash(data: String) -> String:
-    ## 使用SHA-256哈希数据
-    var hash_context = HashingContext.new()
-    hash_context.hash(data, HashingContext.HASH_SHA256)
-    return hash_context.get_digest_as_string()
-
-func _generate_random_bytes(length: int) -> String:
-    ## 生成指定长度的随机字节
+    var hasher = HashingContext.new()
+    hasher.start(HashingContext.HASH_SHA256)
+    hasher.update(data)
+    var hash = hasher.finish()
     var crypto = Crypto.new()
-    return crypto.generate_random_bytes(length).hex_encode()
+    return crypto.verify(HashingContext.HASH_SHA256, hash, signature, cert)
 
-func _encrypt_challenge(challenge: String, key: String) -> String:
-    ## 使用AES-ECB加密挑战
-    var crypto = Crypto.new()
-    ## 将key转为CryptoKey
-    var crypto_key = CryptoKey.new()
-    crypto_key.load_from_buffer(key.to_utf8_buffer())
-    var encrypted = crypto.encrypt(crypto_key, challenge.to_utf8_buffer())
-    return _encode_base64(encrypted)
-
-func _decrypt_challenge(encrypted_challenge: String, key: String) -> String:
-    ## 使用AES-ECB解密挑战
-    var crypto = Crypto.new()
-    ## 将key转为CryptoKey
-    var crypto_key = CryptoKey.new()
-    crypto_key.load_from_buffer(key.to_utf8_buffer())
-    var decrypted = crypto.decrypt(crypto_key, _decode_base64(encrypted_challenge))  ## 修复：使用正确的参数类型
-    return decrypted
-
-func _verify_signature(data: String, signature: String, server_cert: String) -> bool:
-    ## 验证签名
-    var crypto = Crypto.new()
-    var cert = crypto.load_certificate(server_cert)
-    
-    ## 计算数据的哈希
-    var hash_context = HashingContext.new()
-    hash_context.hash(data, HashingContext.HASH_SHA256)
-    var hash = hash_context.get_digest()
-    
-    ## 解码签名
-    var signature_bytes = _decode_base64(signature)
-    
-    return crypto.verify(HashingContext.HASH_SHA256, hash, signature_bytes, cert)
-
-func _sign_message(message: String) -> String:
-    ## 签名消息
-    var crypto = Crypto.new()
-    
-    ## 计算消息哈希
-    var hash_context = HashingContext.new()
-    hash_context.hash(message, HashingContext.HASH_SHA256)
-    var hash = hash_context.get_digest()
-    
-    ## 加载密钥
+func _sign_message(message: PackedByteArray) -> PackedByteArray:
     var key = CryptoKey.new()
     key.load_from_string(client_key)
-    
-    var signature = crypto.sign(HashingContext.HASH_SHA256, hash, key)
-    return _encode_base64(signature)
+    var hasher = HashingContext.new()
+    hasher.start(HashingContext.HASH_SHA256)
+    hasher.update(message)
+    var hash = hasher.finish()
+    var crypto = Crypto.new()
+    return crypto.sign(HashingContext.HASH_SHA256, hash, key)
 
-func _generate_expected_response(server_secret: String, server_cert: String, server_challenge: String) -> String:
-    ## 生成预期响应
-    var data = server_challenge + server_secret
-    return _hash(data)
+func _pairing_stage_4() -> bool:
+    pairing_progress = 4
+    var sig = _sign_message(pairing_client_secret)
+    pairing_client_pairing_secret = pairing_client_secret + sig
+    var b64 = Marshalls.raw_to_base64(pairing_client_pairing_secret)
+    var url = "http://%s:%d/pair?devicename=roth&updateState=1&clientpairingsecret=%s" % [server_ip, DEFAULT_SERVER_PORT, b64]
 
-func _encode_base64(data: String) -> String:
-    ## 编码为Base64
-    return Marshalls.utf8_to_base64(data)
+    var resp = await _http_get(url)
+    if not resp.success:
+        return false
 
-func _decode_base64(data: String) -> PackedByteArray:  ## 修复：返回PackedByteArray
-    ## 解码Base64
-    return Marshalls.base64_to_raw(data)
+    var xml = XMLParser.new()
+    if xml.parse(resp.body) != OK:
+        return false
+
+    var root = xml.get_node()
+    return root.get_child(0).get_text() == "1"
+
+func _pairing_stage_5() -> bool:
+    pairing_progress = 5
+    var url = "https://%s:%d/pair?devicename=roth&updateState=1&phrase=pairchallenge" % [server_ip, DEFAULT_SERVER_PORT]
+    var http = HTTPRequest.new()
+    add_child(http)
+    http.use_ssl = true
+    http.ssl_verify_enabled = false  # 忽略自签名证书错误（生产环境应验证）
+    var err = http.request(url)
+    if err != OK:
+        http.queue_free()
+        return false
+    await http.request_completed
+    var success = http.get_response_code() == 200
+    http.queue_free()
+    if not success:
+        return false
+
+    var xml = XMLParser.new()
+    if xml.parse(http.get_response_body_as_string()) != OK:
+        return false
+
+    var root = xml.get_node()
+    return root.get_child(0).get_text() == "1"
+
+# ==================== 其他功能（完全保留） ====================
 
 func get_server_info() -> ServerInfo:
-    ## 获取服务器信息
-    var url = "http://"+server_ip+":47984/serverinfo?uniqueid=0123456789ABCDEF&uuid=" + _generate_uuid()
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 80
-    if url.startswith("https://"):
-        port = 443
-    var err = http_client.connect_to_host(host, port)
-    
-    if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
+    var url = "http://%s:%d/serverinfo?uniqueid=0123456789ABCDEF&uuid=%s" % [server_ip, DEFAULT_SERVER_PORT, _generate_uuid()]
+    var resp = await _http_get(url)
+    if not resp.success:
         return server_info
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
-        return server_info
-    
-    ## 解析响应
-    var response = http_client.get_response_body_as_string()
     var xml = XMLParser.new()
-    var parse_error = xml.parse(response)
-    if parse_error != OK:
-        error_message = "Failed to parse XML: " + str(parse_error)
+    if xml.parse(resp.body) != OK:
         return server_info
-    
     var root = xml.get_node()
+    if root.get_child_count() < 6:
+        return server_info
     server_info.hostname = root.get_child(0).get_text()
     server_info.https_port = int(root.get_child(1).get_text())
     server_info.state = _parse_server_state(root.get_child(2).get_text())
@@ -604,121 +374,66 @@ func get_server_info() -> ServerInfo:
     return server_info
 
 func _parse_server_state(state: String) -> ServerState:
-    ## 解析服务器状态字符串
-    if state == "SERVER_READY":
-        return ServerState.SERVER_READY
-    elif state == "SERVER_BUSY":
-        return ServerState.SERVER_BUSY
-    else:
-        return ServerState.SERVER_OFFLINE
+    match state:
+        "SERVER_READY": return ServerState.SERVER_READY
+        "SERVER_BUSY": return ServerState.SERVER_BUSY
+        _: return ServerState.SERVER_OFFLINE
 
 func _generate_uuid() -> String:
-    ## 生成UUID
-    return _generate_random_bytes(16)
+    return Marshalls.raw_to_base64(Crypto.new().generate_random_bytes(16))
 
 func get_app_list() -> Array:
-    ## 获取应用列表
-    var url = "http://"+server_ip+":47984/applist?uniqueid=0123456789ABCDEF&uuid=" + _generate_uuid()
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 80
-    if url.startswith("https://"):
-        port = 443
-    var err = http_client.connect_to_host(host, port)
-    
-    if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
+    var url = "http://%s:%d/applist?uniqueid=0123456789ABCDEF&uuid=%s" % [server_ip, DEFAULT_SERVER_PORT, _generate_uuid()]
+    var resp = await _http_get(url)
+    if not resp.success:
         return app_list
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
-        return app_list
-    
-    ## 解析响应
-    var response = http_client.get_response_body_as_string()
     var xml = XMLParser.new()
-    var parse_error = xml.parse(response)
-    if parse_error != OK:
-        error_message = "Failed to parse XML: " + str(parse_error)
+    if xml.parse(resp.body) != OK:
         return app_list
-    
     var root = xml.get_node()
     app_list = []
     for i in range(root.get_child_count()):
-        var app_node = root.get_child(i)
-        if app_node.get_name() == "App":
+        var node = root.get_child(i)
+        if node.get_name() == "App":
             var app = AppInfo.new()
-            app.title = app_node.get_child(0).get_text()
-            app.id = int(app_node.get_child(1).get_text())
-            app.is_hdr_supported = app_node.get_child(2).get_text() == "1"
-            app.is_app_collector_game = app_node.get_child(3).get_text() == "1"
+            app.title = node.get_child(0).get_text()
+            app.id = int(node.get_child(1).get_text())
+            app.is_hdr_supported = node.get_child(2).get_text() == "1"
+            app.is_app_collector_game = node.get_child(3).get_text() == "1"
             app_list.append(app)
     return app_list
 
 func launch_app(app_id: int, parent_path: String = "") -> bool:
-    ## 启动应用并创建连接，增加parent_path参数
     if connection_state == ConnectionState.CONNECTED:
         error_message = "Already connected"
         return false
-    
     connection_state = ConnectionState.CONNECTING
-    
-    ## 获取服务器信息
-    var server_info = get_server_info()
-    
-    ## 如果服务器正在忙，尝试恢复
+    var server_info = await get_server_info()
     if server_info.state == ServerState.SERVER_BUSY:
-        if not resume_connection():
+        if not await resume_connection():
             error_message = "Failed to resume connection"
             connection_state = ConnectionState.DISCONNECTED
             return false
-    
-    ## 准备请求
-    var url = "http://"+server_ip+":47984/launch?appid=" + str(app_id) + "&mode=1920x1080x60&rikey=" + _encode_base64(pairing_aes_key) + "&rikeyid=" + _encode_base64(pairing_salt.substr(0, 4)) + "&localAudioPlayMode=1"
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 80
-    if url.startswith("https://"):
-        port = 443
-    var err = http_client.connect_to_host(host, port)
-    
-    if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
+
+    var rikey = Marshalls.raw_to_base64(pairing_aes_key)
+    var rikeyid = Marshalls.raw_to_base64(pairing_salt.slice(0, 4))
+    var url = "http://%s:%d/launch?appid=%d&mode=1920x1080x60&rikey=%s&rikeyid=%s&localAudioPlayMode=1" % [server_ip, DEFAULT_SERVER_PORT, app_id, rikey, rikeyid]
+    var resp = await _http_get(url)
+    if not resp.success:
         connection_state = ConnectionState.DISCONNECTED
         return false
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
-        connection_state = ConnectionState.DISCONNECTED
-        return false
-    
-    ## 解析响应
-    var response = http_client.get_response_body_as_string()
+
     var xml = XMLParser.new()
-    var parse_error = xml.parse(response)
-    if parse_error != OK:
-        error_message = "Failed to parse XML: " + str(parse_error)
+    if xml.parse(resp.body) != OK:
         connection_state = ConnectionState.DISCONNECTED
         return false
-    
     var root = xml.get_node()
     current_session.session_url = root.get_child(0).get_text()
     current_session.udp_port = int(root.get_child(1).get_text())
     current_session.tcp_port = int(root.get_child(2).get_text())
-    
-    ## 创建MoonlightStream实例
+
     moonlight_stream = MoonlightStream.new()
-    moonlight_stream.set_host_address(""+server_ip+"")
+    moonlight_stream.set_host_address(server_ip)
     moonlight_stream.set_app_id(app_id)
     moonlight_stream.set_resolution(1920, 1080)
     moonlight_stream.set_fps(60)
@@ -726,172 +441,97 @@ func launch_app(app_id: int, parent_path: String = "") -> bool:
     moonlight_stream.set_video_codec(MoonlightStream.CODEC_H264)
     moonlight_stream.set_color_space(MoonlightStream.COLOR_SPACE_REC_709)
     moonlight_stream.set_enable_hdr(false)
-    
-    ## 设置远程输入密钥
-    var aes_key = _decode_base64(pairing_aes_key)
-    var aes_iv = _decode_base64(pairing_salt.substr(0, 4))
+
+    var aes_key = pairing_aes_key
+    var aes_iv = pairing_salt.slice(0, 4)
     moonlight_stream.set_remote_input_aes_key(aes_key)
     moonlight_stream.set_remote_input_aes_iv(aes_iv)
-    
-    ## 添加到指定父节点
+
     if parent_path == "":
         add_child(moonlight_stream)
     else:
-        var parent_node = get_node(parent_path)
+        var parent_node = get_node_or_null(parent_path)
         if parent_node:
             parent_node.add_child(moonlight_stream)
         else:
             error_message = "Parent node not found: " + parent_path
             return false
-    
-    ## 启动连接
-    var success = moonlight_stream.start_connection()
-    if not success:
-        error_message = "Failed to start connection: " + moonlight_stream.get_error_message()
+
+    if not moonlight_stream.start_connection():
+        error_message = "Failed to start connection"
         connection_state = ConnectionState.DISCONNECTED
         return false
-    
+
     connection_state = ConnectionState.CONNECTED
     current_app_id = app_id
     return true
 
 func resume_connection() -> bool:
-    ## 尝试恢复已存在的连接
-    var url = "http://"+server_ip+":47984/resume?uniqueid=0123456789ABCDEF&uuid=" + _generate_uuid()
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 80
-    if url.startswith("https://"):
-        port = 443
-    var err = http_client.connect_to_host(host, port)
-    
-    if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
+    var url = "http://%s:%d/resume?uniqueid=0123456789ABCDEF&uuid=%s" % [server_ip, DEFAULT_SERVER_PORT, _generate_uuid()]
+    var resp = await _http_get(url)
+    if not resp.success:
         return false
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
-        return false
-    
-    ## 解析响应
-    var response = http_client.get_response_body_as_string()
     var xml = XMLParser.new()
-    var parse_error = xml.parse(response)
-    if parse_error != OK:
-        error_message = "Failed to parse XML: " + str(parse_error)
+    if xml.parse(resp.body) != OK:
         return false
-    
     var root = xml.get_node()
-    var status = root.get_child(0).get_text()
-    return status == "200"
+    return root.get_child(0).get_text() == "200"
 
 func stop_streaming() -> bool:
-    ## 停止流媒体并断开连接
     if connection_state != ConnectionState.CONNECTED:
         error_message = "Not connected"
         return false
-    
     connection_state = ConnectionState.DISCONNECTING
-    
-    ## 停止连接
     if moonlight_stream:
         moonlight_stream.stop_connection()
         moonlight_stream.queue_free()
         moonlight_stream = null
-    
-    ## 发送取消请求
-    var url = "http://"+server_ip+":47984/cancel?uniqueid=0123456789ABCDEF&uuid=" + _generate_uuid()
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 80
-    if url.startswith("https://"):
-        port = 443
-    var err = http_client.connect_to_host(host, port)
-    
-    if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
-        connection_state = ConnectionState.CONNECTED
-        return false
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
-        connection_state = ConnectionState.CONNECTED
-        return false
-    
+    var url = "http://%s:%d/cancel?uniqueid=0123456789ABCDEF&uuid=%s" % [server_ip, DEFAULT_SERVER_PORT, _generate_uuid()]
+    await _http_get(url)
     connection_state = ConnectionState.DISCONNECTED
     return true
 
 func get_app_asset(app_id: int) -> Texture:
-    ## 获取应用的封面图
-    var url = "http://"+server_ip+":47984/appasset?appid=" + str(app_id) + "&AssetType=2&AssetIdx=0"
-    
-    ## 发送请求
-    var http_client = HTTPClient.new()
-    
-    ## 修复：使用connect_to_host()而不是connect()
-    var host = url.split("://")[1].split("/")[0]
-    var port = 80
-    if url.startswith("https://"):
-        port = 443
-    var err = http_client.connect_to_host(host, port)
-    
+    var url = "http://%s:%d/appasset?appid=%d&AssetType=2&AssetIdx=0" % [server_ip, DEFAULT_SERVER_PORT, app_id]
+    var http = HTTPRequest.new()
+    add_child(http)
+    var err = http.request(url)
     if err != OK:
-        error_message = "Failed to connect to server: " + str(err)
+        http.queue_free()
         return null
-    
-    err = http_client.get_response()
-    if err != OK:
-        error_message = "Failed to get response: " + str(err)
+    await http.request_completed
+    if http.get_response_code() != 200:
+        http.queue_free()
         return null
-    
-    ## 获取图像数据
-    var image_data = http_client.get_response_body_as_array()
-    
-    ## 创建Texture
+    var img_data = http.get_response_body()
+    http.queue_free()
     var image = Image.new()
-    image.load_from_buffer(image_data)
-    var texture = Texture.new()
-    texture.create_from_image(image)
-    return texture
+    if image.load_jpg_from_buffer(img_data) != OK and image.load_png_from_buffer(img_data) != OK:
+        return null
+    return ImageTexture.create_from_image(image)
+
+# ==================== Getter Functions ====================
 
 func get_error_message() -> String:
-    ## 获取当前错误消息
     return error_message
 
 func is_pairing_successful() -> bool:
-    ## 检查配对是否成功
     return pairing_state == PairingState.SUCCESS
 
 func get_pairing_progress() -> int:
-    ## 获取配对进度（0-100）
     return pairing_progress * 20
 
 func get_current_connection_state() -> ConnectionState:
-    ## 获取当前连接状态
     return connection_state
 
 func get_current_app_id() -> int:
-    ## 获取当前连接的应用ID
     return current_app_id
 
 func get_current_session() -> SessionInfo:
-    ## 获取当前会话信息
     return current_session
 
 func get_current_app_asset() -> Texture:
-    ## 获取当前应用的封面图
     return current_app_asset
 
 func set_IP(ip: String):
-    ## 设置IP地址
     server_ip = ip

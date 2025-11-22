@@ -42,10 +42,10 @@ extends Node
     #else:
         #print("Connection failed! Check if keys were set correctly.")
 
-@onready var moonlight: MoonlightClient =MoonlightClient.new()
+@onready var moonlight: MoonLightClient = MoonLightClient.new()
 
 var ip = "127.0.0.1"
-var pin = 0
+var pin = 123456
 var appid = 0
 
 func test_connect() -> void:
@@ -62,4 +62,5 @@ func appid_set(new_text: String) -> void:
     appid = int(new_text)
 
 func pair() -> void:
-    moonlight.
+    moonlight.server_ip = ip
+    $GridContainer/LineEdit3.text = moonlight
