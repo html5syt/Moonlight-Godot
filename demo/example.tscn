@@ -21,6 +21,7 @@ columns = 10
 [node name="LineEdit" type="LineEdit" parent="GridContainer"]
 custom_minimum_size = Vector2(150, 0)
 layout_mode = 2
+text = "127.0.0.1"
 placeholder_text = "IP"
 
 [node name="LineEdit3" type="LineEdit" parent="GridContainer"]
@@ -57,9 +58,17 @@ text = "resume"
 layout_mode = 2
 text = "stop"
 
+[node name="Label" type="Label" parent="GridContainer"]
+layout_mode = 2
+
 [node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="."]
 
 [connection signal="text_changed" from="GridContainer/LineEdit" to="." method="ip_set"]
 [connection signal="text_changed" from="GridContainer/LineEdit3" to="." method="pin_set"]
 [connection signal="pressed" from="GridContainer/Button" to="." method="pair"]
+[connection signal="pressed" from="GridContainer/Button2" to="." method="unpair"]
+[connection signal="pressed" from="GridContainer/Button3" to="." method="applist"]
 [connection signal="text_changed" from="GridContainer/LineEdit2" to="." method="appid_set"]
+[connection signal="pressed" from="GridContainer/Button4" to="." method="launch"]
+[connection signal="pressed" from="GridContainer/Button5" to="." method="resume"]
+[connection signal="pressed" from="GridContainer/Button6" to="." method="stop"]

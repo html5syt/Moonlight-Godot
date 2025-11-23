@@ -42,7 +42,16 @@ extends Node
     #else:
         #print("Connection failed! Check if keys were set correctly.")
 
-@onready var moonlight: MoonLightClient = MoonLightClient.new()
+@onready var moonlight: MoonlightClient = MoonlightClient.new()
+
+func _ready() -> void:
+    $Container.add_child(moonlight)
+    moonlight.pairing_pin.connect(func(e):$GridContainer/LineEdit3.text = e)
+    moonlight.app_list_received.connect(func(e):print(e))
+    moonlight.app_icon_received.connect(func(e):print(e))
+    moonlight.server_info_received.connect(func(e):print(e))
+    moonlight.pairing_message.connect(func(e):print(e))
+    moonlight.pairing_failed.connect(func(e):push_error(e))
 
 var ip = "127.0.0.1"
 var pin = 123456
@@ -63,4 +72,20 @@ func appid_set(new_text: String) -> void:
 
 func pair() -> void:
     moonlight.server_ip = ip
-    $GridContainer/LineEdit3.text = moonlight
+    moonlight.start_pairing()
+
+func unpair() -> void:
+    moonlight.cancel_pairing()
+
+func applist() -> void:
+    moonlight.fetch_app_list()
+
+
+func launch() -> void:
+    moonlight.start_stream($Container,$GridContainer/LineEdit2.text)
+
+func resume() -> void:
+    pass
+    
+func stop() -> void:
+    moonlight.stop_stream()
