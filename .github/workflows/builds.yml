@@ -2,9 +2,9 @@ name: Build Moonlight GDExtension (CMake + SCons)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "Csharp" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "Csharp" ]
   workflow_dispatch:
 
 jobs:

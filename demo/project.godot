@@ -10,7 +10,14 @@ config_version=5
 
 [application]
 
-config/name="godot cpp template"
-run/main_scene="uid://dh0oj81pufivs"
-config/features=PackedStringArray("4.5", "Forward Plus")
+config/name="Moonlight-Godot"
+config/features=PackedStringArray("4.5", "C#", "Mobile")
 config/icon="res://icon.svg"
+
+[dotnet]
+
+project/assembly_name="Moonlight-Godot"
+
+[rendering]
+
+renderer/rendering_method="mobile"
