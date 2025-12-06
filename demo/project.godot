@@ -11,12 +11,17 @@ config_version=5
 [application]
 
 config/name="Moonlight-Godot"
+run/main_scene="uid://dc1tsui4v3770"
 config/features=PackedStringArray("4.5", "C#", "Mobile")
 config/icon="res://icon.svg"
 
 [dotnet]
 
 project/assembly_name="Moonlight-Godot"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/moonlight-godot/plugin.cfg")
 
 [rendering]
 

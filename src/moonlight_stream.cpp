@@ -1,441 +1,802 @@
 #include "moonlight_stream.h"
+#include "lib/moonlight-common-c/src/Limelight.h"
 
-// Static map for context -> instance (用于音视频回调)
-std::map<void*, MoonlightStream*> MoonlightStream::instance_map;
 
-// Global pointer for connection listeners (因为 C 回调不带 context)
-// 注意：这意味着同一时间只能有一个活跃的连接实例，这符合 Moonlight 的典型用法
-static MoonlightStream* global_active_stream = nullptr;
-
-// Thread-local storage for current stream instance (per decoder thread)
-thread_local MoonlightStream* tls_current_stream = nullptr;
-
-// ============ YUV420P to RGBA (BT.601) ============
-inline uint8_t clamp(int x) { return static_cast<uint8_t>(x < 0 ? 0 : (x > 255 ? 255 : x)); }
-
-void yuv420p_to_rgba(const uint8_t* y, const uint8_t* u, const uint8_t* v, uint8_t* rgba, int width, int height) {
-    int uv_width = width / 2;
-    int uv_height = height / 2;
-    for (int yy = 0; yy < height; ++yy) {
-        for (int xx = 0; xx < width; ++xx) {
-            int uv_xx = xx >> 1;
-            int uv_yy = yy >> 1;
-            int Y = y[yy * width + xx];
-            int U = u[uv_yy * uv_width + uv_xx] - 128;
-            int V = v[uv_yy * uv_width + uv_xx] - 128;
-            int R = Y + ((359 * V) >> 8);
-            int G = Y - ((88 * U + 183 * V) >> 8);
-            int B = Y + ((454 * U) >> 8);
-            int idx = (yy * width + xx) * 4;
-            rgba[idx + 0] = clamp(R);
-            rgba[idx + 1] = clamp(G);
-            rgba[idx + 2] = clamp(B);
-            rgba[idx + 3] = 255;
-        }
-    }
+void LgSTREAM_CONFIGURATION::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_width", "value"), &LgSTREAM_CONFIGURATION::set_width);
+    ClassDB::bind_method(D_METHOD("get_width"), &LgSTREAM_CONFIGURATION::get_width);
+    ClassDB::bind_method(D_METHOD("set_height", "value"), &LgSTREAM_CONFIGURATION::set_height);
+    ClassDB::bind_method(D_METHOD("get_height"), &LgSTREAM_CONFIGURATION::get_height);
+    ClassDB::bind_method(D_METHOD("set_fps", "value"), &LgSTREAM_CONFIGURATION::set_fps);
+    ClassDB::bind_method(D_METHOD("get_fps"), &LgSTREAM_CONFIGURATION::get_fps);
+    ClassDB::bind_method(D_METHOD("set_bitrate", "value"), &LgSTREAM_CONFIGURATION::set_bitrate);
+    ClassDB::bind_method(D_METHOD("get_bitrate"), &LgSTREAM_CONFIGURATION::get_bitrate);
+    ClassDB::bind_method(D_METHOD("set_packetSize", "value"), &LgSTREAM_CONFIGURATION::set_packetSize);
+    ClassDB::bind_method(D_METHOD("get_packetSize"), &LgSTREAM_CONFIGURATION::get_packetSize);
+    ClassDB::bind_method(D_METHOD("set_streamingRemotely", "value"), &LgSTREAM_CONFIGURATION::set_streamingRemotely);
+    ClassDB::bind_method(D_METHOD("get_streamingRemotely"), &LgSTREAM_CONFIGURATION::get_streamingRemotely);
+    ClassDB::bind_method(D_METHOD("set_audioConfiguration", "value"), &LgSTREAM_CONFIGURATION::set_audioConfiguration);
+    ClassDB::bind_method(D_METHOD("get_audioConfiguration"), &LgSTREAM_CONFIGURATION::get_audioConfiguration);
+    ClassDB::bind_method(D_METHOD("set_supportedVideoFormats", "value"), &LgSTREAM_CONFIGURATION::set_supportedVideoFormats);
+    ClassDB::bind_method(D_METHOD("get_supportedVideoFormats"), &LgSTREAM_CONFIGURATION::get_supportedVideoFormats);
+    ClassDB::bind_method(D_METHOD("set_clientRefreshRateX100", "value"), &LgSTREAM_CONFIGURATION::set_clientRefreshRateX100);
+    ClassDB::bind_method(D_METHOD("get_clientRefreshRateX100"), &LgSTREAM_CONFIGURATION::get_clientRefreshRateX100);
+    ClassDB::bind_method(D_METHOD("set_colorSpace", "value"), &LgSTREAM_CONFIGURATION::set_colorSpace);
+    ClassDB::bind_method(D_METHOD("get_colorSpace"), &LgSTREAM_CONFIGURATION::get_colorSpace);
+    ClassDB::bind_method(D_METHOD("set_colorRange", "value"), &LgSTREAM_CONFIGURATION::set_colorRange);
+    ClassDB::bind_method(D_METHOD("get_colorRange"), &LgSTREAM_CONFIGURATION::get_colorRange);
+    ClassDB::bind_method(D_METHOD("set_encryptionFlags", "value"), &LgSTREAM_CONFIGURATION::set_encryptionFlags);
+    ClassDB::bind_method(D_METHOD("get_encryptionFlags"), &LgSTREAM_CONFIGURATION::get_encryptionFlags);
+    ClassDB::bind_method(D_METHOD("set_remoteInputAesKey", "value"), &LgSTREAM_CONFIGURATION::set_remoteInputAesKey);
+    ClassDB::bind_method(D_METHOD("get_remoteInputAesKey"), &LgSTREAM_CONFIGURATION::get_remoteInputAesKey);
+    ClassDB::bind_method(D_METHOD("set_remoteInputAesIv", "value"), &LgSTREAM_CONFIGURATION::set_remoteInputAesIv);
+    ClassDB::bind_method(D_METHOD("get_remoteInputAesIv"), &LgSTREAM_CONFIGURATION::get_remoteInputAesIv);
+}
+LgSTREAM_CONFIGURATION::LgSTREAM_CONFIGURATION() {
+    width = 0;
+    height = 0;
+    fps = 0;
+    bitrate = 0;
+    packetSize = 0;
+    streamingRemotely = 0;
+    audioConfiguration = 0;
+    supportedVideoFormats = 0;
+    clientRefreshRateX100 = 0;
+    colorSpace = 0;
+    colorRange = 0;
+    encryptionFlags = 0;
+    remoteInputAesKey = String();
+    remoteInputAesIv = String();
 }
 
-// ============ Video Callbacks (STATIC) ============
-static int dr_setup(int video_format, int width, int height, int redraw_rate, void* context, int dr_flags) {
-    auto it = MoonlightStream::instance_map.find(context);
-    if (it != MoonlightStream::instance_map.end()) {
-        tls_current_stream = it->second;
-        // 使用 call_deferred 确保在主线程更新 UI 属性
-        tls_current_stream->call_deferred("set_resolution", width, height);
-    } else {
-        tls_current_stream = nullptr;
-    }
-    return DR_OK;
+
+void LgLENTRY::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_data", "value"), &LgLENTRY::set_data);
+    ClassDB::bind_method(D_METHOD("get_data"), &LgLENTRY::get_data);
+    ClassDB::bind_method(D_METHOD("set_length", "value"), &LgLENTRY::set_length);
+    ClassDB::bind_method(D_METHOD("get_length"), &LgLENTRY::get_length);
+    ClassDB::bind_method(D_METHOD("set_bufferType", "value"), &LgLENTRY::set_bufferType);
+    ClassDB::bind_method(D_METHOD("get_bufferType"), &LgLENTRY::get_bufferType);
+}
+LgLENTRY::LgLENTRY() {
+    data = String();
+    length = 0;
+    bufferType = 0;
 }
 
-static void dr_cleanup(void) {
-    tls_current_stream = nullptr;
+
+void LgDECODE_UNIT::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_frameNumber", "value"), &LgDECODE_UNIT::set_frameNumber);
+    ClassDB::bind_method(D_METHOD("get_frameNumber"), &LgDECODE_UNIT::get_frameNumber);
+    ClassDB::bind_method(D_METHOD("set_frameType", "value"), &LgDECODE_UNIT::set_frameType);
+    ClassDB::bind_method(D_METHOD("get_frameType"), &LgDECODE_UNIT::get_frameType);
+    ClassDB::bind_method(D_METHOD("set_frameHostProcessingLatency", "value"), &LgDECODE_UNIT::set_frameHostProcessingLatency);
+    ClassDB::bind_method(D_METHOD("get_frameHostProcessingLatency"), &LgDECODE_UNIT::get_frameHostProcessingLatency);
+    ClassDB::bind_method(D_METHOD("set_receiveTimeUs", "value"), &LgDECODE_UNIT::set_receiveTimeUs);
+    ClassDB::bind_method(D_METHOD("get_receiveTimeUs"), &LgDECODE_UNIT::get_receiveTimeUs);
+    ClassDB::bind_method(D_METHOD("set_enqueueTimeUs", "value"), &LgDECODE_UNIT::set_enqueueTimeUs);
+    ClassDB::bind_method(D_METHOD("get_enqueueTimeUs"), &LgDECODE_UNIT::get_enqueueTimeUs);
+    ClassDB::bind_method(D_METHOD("set_presentationTimeUs", "value"), &LgDECODE_UNIT::set_presentationTimeUs);
+    ClassDB::bind_method(D_METHOD("get_presentationTimeUs"), &LgDECODE_UNIT::get_presentationTimeUs);
+    ClassDB::bind_method(D_METHOD("set_rtpTimestamp", "value"), &LgDECODE_UNIT::set_rtpTimestamp);
+    ClassDB::bind_method(D_METHOD("get_rtpTimestamp"), &LgDECODE_UNIT::get_rtpTimestamp);
+    ClassDB::bind_method(D_METHOD("set_fullLength", "value"), &LgDECODE_UNIT::set_fullLength);
+    ClassDB::bind_method(D_METHOD("get_fullLength"), &LgDECODE_UNIT::get_fullLength);
+    ClassDB::bind_method(D_METHOD("set_bufferList", "value"), &LgDECODE_UNIT::set_bufferList);
+    ClassDB::bind_method(D_METHOD("get_bufferList"), &LgDECODE_UNIT::get_bufferList);
+    ClassDB::bind_method(D_METHOD("set_hdrActive", "value"), &LgDECODE_UNIT::set_hdrActive);
+    ClassDB::bind_method(D_METHOD("get_hdrActive"), &LgDECODE_UNIT::get_hdrActive);
+    ClassDB::bind_method(D_METHOD("set_colorspace", "value"), &LgDECODE_UNIT::set_colorspace);
+    ClassDB::bind_method(D_METHOD("get_colorspace"), &LgDECODE_UNIT::get_colorspace);
+}
+LgDECODE_UNIT::LgDECODE_UNIT() {
+    frameNumber = 0;
+    frameType = 0;
+    // TODO: init frameHostProcessingLatency of type Variant
+    // TODO: init receiveTimeUs of type Variant
+    // TODO: init enqueueTimeUs of type Variant
+    // TODO: init presentationTimeUs of type Variant
+    rtpTimestamp = 0;
+    fullLength = 0;
+    // TODO: init bufferList of type Variant
+    hdrActive = false;
+    // TODO: init colorspace of type Variant
 }
 
-static int dr_submit_decode_unit(PDECODE_UNIT decode_unit) {
-    if (tls_current_stream && tls_current_stream->is_streaming()) {
-        return tls_current_stream->_on_submit_decode_unit(decode_unit);
-    }
-    return DR_OK;
+
+void LgDECODER_RENDERER_CALLBACKS::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_setup", "value"), &LgDECODER_RENDERER_CALLBACKS::set_setup);
+    ClassDB::bind_method(D_METHOD("get_setup"), &LgDECODER_RENDERER_CALLBACKS::get_setup);
+    ClassDB::bind_method(D_METHOD("set_start", "value"), &LgDECODER_RENDERER_CALLBACKS::set_start);
+    ClassDB::bind_method(D_METHOD("get_start"), &LgDECODER_RENDERER_CALLBACKS::get_start);
+    ClassDB::bind_method(D_METHOD("set_stop", "value"), &LgDECODER_RENDERER_CALLBACKS::set_stop);
+    ClassDB::bind_method(D_METHOD("get_stop"), &LgDECODER_RENDERER_CALLBACKS::get_stop);
+    ClassDB::bind_method(D_METHOD("set_cleanup", "value"), &LgDECODER_RENDERER_CALLBACKS::set_cleanup);
+    ClassDB::bind_method(D_METHOD("get_cleanup"), &LgDECODER_RENDERER_CALLBACKS::get_cleanup);
+    ClassDB::bind_method(D_METHOD("set_submitDecodeUnit", "value"), &LgDECODER_RENDERER_CALLBACKS::set_submitDecodeUnit);
+    ClassDB::bind_method(D_METHOD("get_submitDecodeUnit"), &LgDECODER_RENDERER_CALLBACKS::get_submitDecodeUnit);
+    ClassDB::bind_method(D_METHOD("set_capabilities", "value"), &LgDECODER_RENDERER_CALLBACKS::set_capabilities);
+    ClassDB::bind_method(D_METHOD("get_capabilities"), &LgDECODER_RENDERER_CALLBACKS::get_capabilities);
+}
+LgDECODER_RENDERER_CALLBACKS::LgDECODER_RENDERER_CALLBACKS() {
+    // TODO: init setup of type Variant
+    // TODO: init start of type Variant
+    // TODO: init stop of type Variant
+    // TODO: init cleanup of type Variant
+    // TODO: init submitDecodeUnit of type Variant
+    capabilities = 0;
 }
 
-// ============ Audio Callbacks (STATIC) ============
-static int ar_init(int audio_configuration, const POPUS_MULTISTREAM_CONFIGURATION opus_config, void* context, int ar_flags) {
-    auto it = MoonlightStream::instance_map.find(context);
-    if (it == MoonlightStream::instance_map.end()) {
-        return -1;
-    }
-    MoonlightStream* self = it->second;
-    
-    // 假设 audio_stream 已经在主线程初始化完毕 (在构造函数中)
-    if (self->audio_stream.is_valid()) {
-        // instantiate_playback 是线程安全的吗？通常建议在主线程做
-        // 这里为了简化直接调用，如果崩溃需移至 _connection_thread_func 前的主线程逻辑
-        self->audio_playback = self->audio_stream->instantiate_playback();
-    }
-    return 0;
+
+void LgOPUS_MULTISTREAM_CONFIGURATION::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_sampleRate", "value"), &LgOPUS_MULTISTREAM_CONFIGURATION::set_sampleRate);
+    ClassDB::bind_method(D_METHOD("get_sampleRate"), &LgOPUS_MULTISTREAM_CONFIGURATION::get_sampleRate);
+    ClassDB::bind_method(D_METHOD("set_channelCount", "value"), &LgOPUS_MULTISTREAM_CONFIGURATION::set_channelCount);
+    ClassDB::bind_method(D_METHOD("get_channelCount"), &LgOPUS_MULTISTREAM_CONFIGURATION::get_channelCount);
+    ClassDB::bind_method(D_METHOD("set_streams", "value"), &LgOPUS_MULTISTREAM_CONFIGURATION::set_streams);
+    ClassDB::bind_method(D_METHOD("get_streams"), &LgOPUS_MULTISTREAM_CONFIGURATION::get_streams);
+    ClassDB::bind_method(D_METHOD("set_coupledStreams", "value"), &LgOPUS_MULTISTREAM_CONFIGURATION::set_coupledStreams);
+    ClassDB::bind_method(D_METHOD("get_coupledStreams"), &LgOPUS_MULTISTREAM_CONFIGURATION::get_coupledStreams);
+    ClassDB::bind_method(D_METHOD("set_samplesPerFrame", "value"), &LgOPUS_MULTISTREAM_CONFIGURATION::set_samplesPerFrame);
+    ClassDB::bind_method(D_METHOD("get_samplesPerFrame"), &LgOPUS_MULTISTREAM_CONFIGURATION::get_samplesPerFrame);
+}
+LgOPUS_MULTISTREAM_CONFIGURATION::LgOPUS_MULTISTREAM_CONFIGURATION() {
+    sampleRate = 0;
+    channelCount = 0;
+    streams = 0;
+    coupledStreams = 0;
+    samplesPerFrame = 0;
 }
 
-static void ar_decode_and_play_sample(char* sample_data, int sample_length) {
-    for (auto& pair : MoonlightStream::instance_map) {
-        MoonlightStream* self = pair.second;
-        if (self && self->audio_playback.is_valid()) {
-            int sample_count = sample_length / sizeof(int16_t);
-            int frame_count = sample_count / 2;
-            PackedVector2Array buffer;
-            buffer.resize(frame_count);
-            Vector2* write_ptr = buffer.ptrw();
-            int16_t* samples = reinterpret_cast<int16_t*>(sample_data);
-            for (int i = 0; i < frame_count; ++i) {
-                float left = static_cast<float>(samples[i * 2]) / 32768.0f;
-                float right = static_cast<float>(samples[i * 2 + 1]) / 32768.0f;
-                write_ptr[i] = Vector2(left, right);
-            }
-            self->audio_playback->push_buffer(buffer);
-            return;
-        }
-    }
+
+void LgAUDIO_RENDERER_CALLBACKS::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_init", "value"), &LgAUDIO_RENDERER_CALLBACKS::set_init);
+    ClassDB::bind_method(D_METHOD("get_init"), &LgAUDIO_RENDERER_CALLBACKS::get_init);
+    ClassDB::bind_method(D_METHOD("set_start", "value"), &LgAUDIO_RENDERER_CALLBACKS::set_start);
+    ClassDB::bind_method(D_METHOD("get_start"), &LgAUDIO_RENDERER_CALLBACKS::get_start);
+    ClassDB::bind_method(D_METHOD("set_stop", "value"), &LgAUDIO_RENDERER_CALLBACKS::set_stop);
+    ClassDB::bind_method(D_METHOD("get_stop"), &LgAUDIO_RENDERER_CALLBACKS::get_stop);
+    ClassDB::bind_method(D_METHOD("set_cleanup", "value"), &LgAUDIO_RENDERER_CALLBACKS::set_cleanup);
+    ClassDB::bind_method(D_METHOD("get_cleanup"), &LgAUDIO_RENDERER_CALLBACKS::get_cleanup);
+    ClassDB::bind_method(D_METHOD("set_decodeAndPlaySample", "value"), &LgAUDIO_RENDERER_CALLBACKS::set_decodeAndPlaySample);
+    ClassDB::bind_method(D_METHOD("get_decodeAndPlaySample"), &LgAUDIO_RENDERER_CALLBACKS::get_decodeAndPlaySample);
+    ClassDB::bind_method(D_METHOD("set_capabilities", "value"), &LgAUDIO_RENDERER_CALLBACKS::set_capabilities);
+    ClassDB::bind_method(D_METHOD("get_capabilities"), &LgAUDIO_RENDERER_CALLBACKS::get_capabilities);
+}
+LgAUDIO_RENDERER_CALLBACKS::LgAUDIO_RENDERER_CALLBACKS() {
+    // TODO: init init of type Variant
+    // TODO: init start of type Variant
+    // TODO: init stop of type Variant
+    // TODO: init cleanup of type Variant
+    // TODO: init decodeAndPlaySample of type Variant
+    capabilities = 0;
 }
 
-// ============ Godot Binding ============
-void MoonlightStream::_bind_methods() {
-    ClassDB::bind_method(D_METHOD("set_host_address", "host"), &MoonlightStream::set_host_address);
-    ClassDB::bind_method(D_METHOD("get_host_address"), &MoonlightStream::get_host_address);
-    ClassDB::bind_method(D_METHOD("set_app_id", "app_id"), &MoonlightStream::set_app_id);
-    ClassDB::bind_method(D_METHOD("get_app_id"), &MoonlightStream::get_app_id);
-    ClassDB::bind_method(D_METHOD("set_server_app_version", "version"), &MoonlightStream::set_server_app_version);
-    ClassDB::bind_method(D_METHOD("get_server_app_version"), &MoonlightStream::get_server_app_version);
-    ClassDB::bind_method(D_METHOD("set_server_codec_mode_support", "support"), &MoonlightStream::set_server_codec_mode_support);
-    ClassDB::bind_method(D_METHOD("get_server_codec_mode_support"), &MoonlightStream::get_server_codec_mode_support);
-    ClassDB::bind_method(D_METHOD("set_server_rtsp_session_url", "url"), &MoonlightStream::set_server_rtsp_session_url);
-    ClassDB::bind_method(D_METHOD("get_server_rtsp_session_url"), &MoonlightStream::get_server_rtsp_session_url);
-    ClassDB::bind_method(D_METHOD("set_resolution", "width", "height"), &MoonlightStream::set_resolution);
-    ClassDB::bind_method(D_METHOD("get_resolution"), &MoonlightStream::get_resolution);
-    ClassDB::bind_method(D_METHOD("set_fps", "fps"), &MoonlightStream::set_fps);
-    ClassDB::bind_method(D_METHOD("get_fps"), &MoonlightStream::get_fps);
-    ClassDB::bind_method(D_METHOD("set_bitrate_kbps", "bitrate_kbps"), &MoonlightStream::set_bitrate_kbps);
-    ClassDB::bind_method(D_METHOD("get_bitrate_kbps"), &MoonlightStream::get_bitrate_kbps);
-    ClassDB::bind_method(D_METHOD("set_video_codec", "codec"), &MoonlightStream::set_video_codec);
-    ClassDB::bind_method(D_METHOD("get_video_codec"), &MoonlightStream::get_video_codec);
-    ClassDB::bind_method(D_METHOD("set_color_space", "color_space"), &MoonlightStream::set_color_space);
-    ClassDB::bind_method(D_METHOD("get_color_space"), &MoonlightStream::get_color_space);
-    ClassDB::bind_method(D_METHOD("set_enable_hdr", "enable"), &MoonlightStream::set_enable_hdr);
-    ClassDB::bind_method(D_METHOD("get_enable_hdr"), &MoonlightStream::get_enable_hdr);
-    ClassDB::bind_method(D_METHOD("get_audio_stream"), &MoonlightStream::get_audio_stream);
-    
-    ClassDB::bind_method(D_METHOD("start_connection"), &MoonlightStream::start_connection);
-    ClassDB::bind_method(D_METHOD("stop_connection"), &MoonlightStream::stop_connection);
-    
-    ClassDB::bind_method(D_METHOD("send_mouse_button_event", "button", "pressed"), &MoonlightStream::send_mouse_button_event);
-    ClassDB::bind_method(D_METHOD("send_mouse_move_event", "x", "y"), &MoonlightStream::send_mouse_move_event);
-    ClassDB::bind_method(D_METHOD("send_key_event", "scancode", "pressed"), &MoonlightStream::send_key_event);
-    ClassDB::bind_method(D_METHOD("set_remote_input_aes_key", "key"), &MoonlightStream::set_remote_input_aes_key);
-    ClassDB::bind_method(D_METHOD("set_remote_input_aes_iv", "iv"), &MoonlightStream::set_remote_input_aes_iv);
 
-    ADD_PROPERTY(PropertyInfo(Variant::STRING, "host_address"), "set_host_address", "get_host_address");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "app_id"), "set_app_id", "get_app_id");
-    ADD_PROPERTY(PropertyInfo(Variant::STRING, "server_app_version"), "set_server_app_version", "get_server_app_version");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "server_codec_mode_support"), "set_server_codec_mode_support", "get_server_codec_mode_support");
-    ADD_PROPERTY(PropertyInfo(Variant::STRING, "server_rtsp_session_url"), "set_server_rtsp_session_url", "get_server_rtsp_session_url");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "fps", PROPERTY_HINT_RANGE, "10,120,1"), "set_fps", "get_fps");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "bitrate_kbps", PROPERTY_HINT_RANGE, "500,100000,1"), "set_bitrate_kbps", "get_bitrate_kbps");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "video_codec", PROPERTY_HINT_ENUM, "H264,HEVC,AV1"), "set_video_codec", "get_video_codec");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "color_space", PROPERTY_HINT_ENUM, "Rec601,Rec709,Rec2020"), "set_color_space", "get_color_space");
-    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "enable_hdr"), "set_enable_hdr", "get_enable_hdr");
-
-    BIND_ENUM_CONSTANT(CODEC_H264);
-    BIND_ENUM_CONSTANT(CODEC_HEVC);
-    BIND_ENUM_CONSTANT(CODEC_AV1);
-    BIND_ENUM_CONSTANT(COLOR_SPACE_REC_601);
-    BIND_ENUM_CONSTANT(COLOR_SPACE_REC_709);
-    BIND_ENUM_CONSTANT(COLOR_SPACE_REC_2020);
-
-    // === 注册信号 ===
-    ADD_SIGNAL(MethodInfo("connection_started"));
-    ADD_SIGNAL(MethodInfo("connection_terminated", PropertyInfo(Variant::INT, "error_code")));
-    ADD_SIGNAL(MethodInfo("connection_failed", PropertyInfo(Variant::STRING, "message")));
+void LgCONNECTION_LISTENER_CALLBACKS::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_stageStarting", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_stageStarting);
+    ClassDB::bind_method(D_METHOD("get_stageStarting"), &LgCONNECTION_LISTENER_CALLBACKS::get_stageStarting);
+    ClassDB::bind_method(D_METHOD("set_stageComplete", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_stageComplete);
+    ClassDB::bind_method(D_METHOD("get_stageComplete"), &LgCONNECTION_LISTENER_CALLBACKS::get_stageComplete);
+    ClassDB::bind_method(D_METHOD("set_stageFailed", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_stageFailed);
+    ClassDB::bind_method(D_METHOD("get_stageFailed"), &LgCONNECTION_LISTENER_CALLBACKS::get_stageFailed);
+    ClassDB::bind_method(D_METHOD("set_connectionStarted", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_connectionStarted);
+    ClassDB::bind_method(D_METHOD("get_connectionStarted"), &LgCONNECTION_LISTENER_CALLBACKS::get_connectionStarted);
+    ClassDB::bind_method(D_METHOD("set_connectionTerminated", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_connectionTerminated);
+    ClassDB::bind_method(D_METHOD("get_connectionTerminated"), &LgCONNECTION_LISTENER_CALLBACKS::get_connectionTerminated);
+    ClassDB::bind_method(D_METHOD("set_logMessage", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_logMessage);
+    ClassDB::bind_method(D_METHOD("get_logMessage"), &LgCONNECTION_LISTENER_CALLBACKS::get_logMessage);
+    ClassDB::bind_method(D_METHOD("set_rumble", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_rumble);
+    ClassDB::bind_method(D_METHOD("get_rumble"), &LgCONNECTION_LISTENER_CALLBACKS::get_rumble);
+    ClassDB::bind_method(D_METHOD("set_connectionStatusUpdate", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_connectionStatusUpdate);
+    ClassDB::bind_method(D_METHOD("get_connectionStatusUpdate"), &LgCONNECTION_LISTENER_CALLBACKS::get_connectionStatusUpdate);
+    ClassDB::bind_method(D_METHOD("set_setHdrMode", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_setHdrMode);
+    ClassDB::bind_method(D_METHOD("get_setHdrMode"), &LgCONNECTION_LISTENER_CALLBACKS::get_setHdrMode);
+    ClassDB::bind_method(D_METHOD("set_rumbleTriggers", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_rumbleTriggers);
+    ClassDB::bind_method(D_METHOD("get_rumbleTriggers"), &LgCONNECTION_LISTENER_CALLBACKS::get_rumbleTriggers);
+    ClassDB::bind_method(D_METHOD("set_setMotionEventState", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_setMotionEventState);
+    ClassDB::bind_method(D_METHOD("get_setMotionEventState"), &LgCONNECTION_LISTENER_CALLBACKS::get_setMotionEventState);
+    ClassDB::bind_method(D_METHOD("set_setControllerLED", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_setControllerLED);
+    ClassDB::bind_method(D_METHOD("get_setControllerLED"), &LgCONNECTION_LISTENER_CALLBACKS::get_setControllerLED);
+    ClassDB::bind_method(D_METHOD("set_setAdaptiveTriggers", "value"), &LgCONNECTION_LISTENER_CALLBACKS::set_setAdaptiveTriggers);
+    ClassDB::bind_method(D_METHOD("get_setAdaptiveTriggers"), &LgCONNECTION_LISTENER_CALLBACKS::get_setAdaptiveTriggers);
+}
+LgCONNECTION_LISTENER_CALLBACKS::LgCONNECTION_LISTENER_CALLBACKS() {
+    // TODO: init stageStarting of type Variant
+    // TODO: init stageComplete of type Variant
+    // TODO: init stageFailed of type Variant
+    // TODO: init connectionStarted of type Variant
+    // TODO: init connectionTerminated of type Variant
+    // TODO: init logMessage of type Variant
+    // TODO: init rumble of type Variant
+    // TODO: init connectionStatusUpdate of type Variant
+    // TODO: init setHdrMode of type Variant
+    // TODO: init rumbleTriggers of type Variant
+    // TODO: init setMotionEventState of type Variant
+    // TODO: init setControllerLED of type Variant
+    // TODO: init setAdaptiveTriggers of type Variant
 }
 
-// ============ Lifecycle ============
-MoonlightStream::MoonlightStream() {
-    void* render_context = this;
-    instance_map[render_context] = this;
-    
-    // 在主线程提前初始化 AudioStream，避免在回调线程中创建对象的风险
-    audio_stream.instantiate();
-    audio_stream->set_mix_rate(48000);
 
-    viewport = memnew(SubViewport);
-    viewport->set_name("VideoViewport");
-    viewport->set_size(Size2i(width, height));
-    viewport->set_disable_3d(true);
-    viewport->set_clear_mode(SubViewport::CLEAR_MODE_ALWAYS);
-    viewport->set_transparent_background(false);
-    viewport->set_update_mode(SubViewport::UPDATE_ALWAYS);
-    add_child(viewport);
-    texture_rid = RenderingServer::get_singleton()->viewport_get_texture(viewport->get_viewport_rid());
+void LgSERVER_INFORMATION::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_serverCodecModeSupport", "value"), &LgSERVER_INFORMATION::set_serverCodecModeSupport);
+    ClassDB::bind_method(D_METHOD("get_serverCodecModeSupport"), &LgSERVER_INFORMATION::get_serverCodecModeSupport);
+}
+LgSERVER_INFORMATION::LgSERVER_INFORMATION() {
+    serverCodecModeSupport = 0;
 }
 
-MoonlightStream::~MoonlightStream() {
-    instance_map.erase(this);
-    
-    // 如果是当前全局流，清除指针
-    if (global_active_stream == this) {
-        global_active_stream = nullptr;
-    }
 
-    stop_connection(); // 确保线程 join
-    
-    if (viewport) {
-        viewport->queue_free();
-        viewport = nullptr;
-    }
+void LgRTP_AUDIO_STATS::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_packetCountAudio", "value"), &LgRTP_AUDIO_STATS::set_packetCountAudio);
+    ClassDB::bind_method(D_METHOD("get_packetCountAudio"), &LgRTP_AUDIO_STATS::get_packetCountAudio);
+    ClassDB::bind_method(D_METHOD("set_packetCountFec", "value"), &LgRTP_AUDIO_STATS::set_packetCountFec);
+    ClassDB::bind_method(D_METHOD("get_packetCountFec"), &LgRTP_AUDIO_STATS::get_packetCountFec);
+    ClassDB::bind_method(D_METHOD("set_packetCountFecRecovered", "value"), &LgRTP_AUDIO_STATS::set_packetCountFecRecovered);
+    ClassDB::bind_method(D_METHOD("get_packetCountFecRecovered"), &LgRTP_AUDIO_STATS::get_packetCountFecRecovered);
+    ClassDB::bind_method(D_METHOD("set_packetCountFecFailed", "value"), &LgRTP_AUDIO_STATS::set_packetCountFecFailed);
+    ClassDB::bind_method(D_METHOD("get_packetCountFecFailed"), &LgRTP_AUDIO_STATS::get_packetCountFecFailed);
+    ClassDB::bind_method(D_METHOD("set_packetCountOOS", "value"), &LgRTP_AUDIO_STATS::set_packetCountOOS);
+    ClassDB::bind_method(D_METHOD("get_packetCountOOS"), &LgRTP_AUDIO_STATS::get_packetCountOOS);
+    ClassDB::bind_method(D_METHOD("set_packetCountInvalid", "value"), &LgRTP_AUDIO_STATS::set_packetCountInvalid);
+    ClassDB::bind_method(D_METHOD("get_packetCountInvalid"), &LgRTP_AUDIO_STATS::get_packetCountInvalid);
+    ClassDB::bind_method(D_METHOD("set_packetCountFecInvalid", "value"), &LgRTP_AUDIO_STATS::set_packetCountFecInvalid);
+    ClassDB::bind_method(D_METHOD("get_packetCountFecInvalid"), &LgRTP_AUDIO_STATS::get_packetCountFecInvalid);
+}
+LgRTP_AUDIO_STATS::LgRTP_AUDIO_STATS() {
+    packetCountAudio = 0;
+    packetCountFec = 0;
+    packetCountFecRecovered = 0;
+    packetCountFecFailed = 0;
+    packetCountOOS = 0;
+    packetCountInvalid = 0;
+    packetCountFecInvalid = 0;
 }
 
-void MoonlightStream::set_resolution(int p_width, int p_height) {
-    width = p_width;
-    height = p_height;
-    if (viewport) {
-        viewport->set_size(Size2i(width, height));
-    }
+
+void LgRTP_VIDEO_STATS::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_packetCountVideo", "value"), &LgRTP_VIDEO_STATS::set_packetCountVideo);
+    ClassDB::bind_method(D_METHOD("get_packetCountVideo"), &LgRTP_VIDEO_STATS::get_packetCountVideo);
+    ClassDB::bind_method(D_METHOD("set_packetCountFec", "value"), &LgRTP_VIDEO_STATS::set_packetCountFec);
+    ClassDB::bind_method(D_METHOD("get_packetCountFec"), &LgRTP_VIDEO_STATS::get_packetCountFec);
+    ClassDB::bind_method(D_METHOD("set_packetCountFecRecovered", "value"), &LgRTP_VIDEO_STATS::set_packetCountFecRecovered);
+    ClassDB::bind_method(D_METHOD("get_packetCountFecRecovered"), &LgRTP_VIDEO_STATS::get_packetCountFecRecovered);
+    ClassDB::bind_method(D_METHOD("set_packetCountFecFailed", "value"), &LgRTP_VIDEO_STATS::set_packetCountFecFailed);
+    ClassDB::bind_method(D_METHOD("get_packetCountFecFailed"), &LgRTP_VIDEO_STATS::get_packetCountFecFailed);
+    ClassDB::bind_method(D_METHOD("set_packetCountOOS", "value"), &LgRTP_VIDEO_STATS::set_packetCountOOS);
+    ClassDB::bind_method(D_METHOD("get_packetCountOOS"), &LgRTP_VIDEO_STATS::get_packetCountOOS);
+    ClassDB::bind_method(D_METHOD("set_packetCountInvalid", "value"), &LgRTP_VIDEO_STATS::set_packetCountInvalid);
+    ClassDB::bind_method(D_METHOD("get_packetCountInvalid"), &LgRTP_VIDEO_STATS::get_packetCountInvalid);
+    ClassDB::bind_method(D_METHOD("set_packetCountFecInvalid", "value"), &LgRTP_VIDEO_STATS::set_packetCountFecInvalid);
+    ClassDB::bind_method(D_METHOD("get_packetCountFecInvalid"), &LgRTP_VIDEO_STATS::get_packetCountFecInvalid);
+}
+LgRTP_VIDEO_STATS::LgRTP_VIDEO_STATS() {
+    packetCountVideo = 0;
+    packetCountFec = 0;
+    packetCountFecRecovered = 0;
+    packetCountFecFailed = 0;
+    packetCountOOS = 0;
+    packetCountInvalid = 0;
+    packetCountFecInvalid = 0;
 }
 
-// ============ Connection Control ============
 
-void MoonlightStream::start_connection() {
-    // 检查是否已在运行
-    if (streaming.load()) {
-        UtilityFunctions::push_warning("MoonlightStream: Already streaming.");
-        return;
-    }
-    
-    // 如果之前的线程还没彻底退出，等待它
-    if (connection_thread.joinable()) {
-        connection_thread.join();
-    }
-
-    // === 参数校验 ===
-    if (custom_aes_key.is_empty() || custom_aes_key.size() != 16) {
-        emit_signal("connection_failed", "Invalid AES Key (must be 16 bytes)");
-        return;
-    }
-    if (custom_aes_iv.is_empty() || custom_aes_iv.size() < 4) {
-        emit_signal("connection_failed", "Invalid AES IV (must be >= 4 bytes)");
-        return;
-    }
-    if (server_app_version.is_empty()) {
-        emit_signal("connection_failed", "Server App Version not set");
-        return;
-    }
-
-    // 设置全局活跃流指针 (供 C 回调使用)
-    global_active_stream = this;
-    streaming.store(true);
-
-    // 启动后台线程
-    connection_thread = std::thread(&MoonlightStream::_connection_thread_func, this);
+void LgdisplayPrimaries::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_x", "value"), &LgdisplayPrimaries::set_x);
+    ClassDB::bind_method(D_METHOD("get_x"), &LgdisplayPrimaries::get_x);
+    ClassDB::bind_method(D_METHOD("set_y", "value"), &LgdisplayPrimaries::set_y);
+    ClassDB::bind_method(D_METHOD("get_y"), &LgdisplayPrimaries::get_y);
+}
+LgdisplayPrimaries::LgdisplayPrimaries() {
+    // TODO: init x of type Variant
+    // TODO: init y of type Variant
 }
 
-void MoonlightStream::_connection_thread_func() {
-    // 在线程栈上准备数据，保证 LiStartConnection 执行期间数据有效
-    CharString host_str = host_address.utf8();
-    CharString app_ver_str = server_app_version.utf8();
-    CharString rtsp_url_str = server_rtsp_session_url.utf8();
 
-    SERVER_INFORMATION server_info = {};
-    server_info.address = host_str.get_data();
-    server_info.serverInfoAppVersion = app_ver_str.get_data();
-    server_info.serverCodecModeSupport = server_codec_mode_support;
-    if (!server_rtsp_session_url.is_empty()) {
-        server_info.rtspSessionUrl = rtsp_url_str.get_data();
-    } else {
-        server_info.rtspSessionUrl = nullptr;
-    }
+const int LgMoonlightstream::LGSTAGE_NONE = 0;
+const int LgMoonlightstream::LGSTAGE_PLATFORM_INIT = 1;
+const int LgMoonlightstream::LGSTAGE_NAME_RESOLUTION = 2;
+const int LgMoonlightstream::LGSTAGE_AUDIO_STREAM_INIT = 3;
+const int LgMoonlightstream::LGSTAGE_RTSP_HANDSHAKE = 4;
+const int LgMoonlightstream::LGSTAGE_CONTROL_STREAM_INIT = 5;
+const int LgMoonlightstream::LGSTAGE_VIDEO_STREAM_INIT = 6;
+const int LgMoonlightstream::LGSTAGE_INPUT_STREAM_INIT = 7;
+const int LgMoonlightstream::LGSTAGE_CONTROL_STREAM_START = 8;
+const int LgMoonlightstream::LGSTAGE_VIDEO_STREAM_START = 9;
+const int LgMoonlightstream::LGSTAGE_AUDIO_STREAM_START = 10;
+const int LgMoonlightstream::LGSTAGE_INPUT_STREAM_START = 11;
+const int LgMoonlightstream::LGSTAGE_MAX = 12;
+const int LgMoonlightstream::LGML_ERROR_GRACEFUL_TERMINATION = 0;
+const int LgMoonlightstream::LGML_ERROR_NO_VIDEO_TRAFFIC = -100;
+const int LgMoonlightstream::LGML_ERROR_NO_VIDEO_FRAME = -101;
+const int LgMoonlightstream::LGML_ERROR_UNEXPECTED_EARLY_TERMINATION = -102;
+const int LgMoonlightstream::LGML_ERROR_PROTECTED_CONTENT = -103;
+const int LgMoonlightstream::LGML_ERROR_FRAME_CONVERSION = -104;
+const int LgMoonlightstream::LGSS_KBE_FLAG_NON_NORMALIZED = 0x01;
+const int LgMoonlightstream::LGA_FLAG = 0x1000;
+const int LgMoonlightstream::LGB_FLAG = 0x2000;
+const int LgMoonlightstream::LGX_FLAG = 0x4000;
+const int LgMoonlightstream::LGY_FLAG = 0x8000;
+const int LgMoonlightstream::LGUP_FLAG = 0x0001;
+const int LgMoonlightstream::LGDOWN_FLAG = 0x0002;
+const int LgMoonlightstream::LGLEFT_FLAG = 0x0004;
+const int LgMoonlightstream::LGRIGHT_FLAG = 0x0008;
+const int LgMoonlightstream::LGLB_FLAG = 0x0100;
+const int LgMoonlightstream::LGRB_FLAG = 0x0200;
+const int LgMoonlightstream::LGPLAY_FLAG = 0x0010;
+const int LgMoonlightstream::LGBACK_FLAG = 0x0020;
+const int LgMoonlightstream::LGLS_CLK_FLAG = 0x0040;
+const int LgMoonlightstream::LGRS_CLK_FLAG = 0x0080;
+const int LgMoonlightstream::LGSPECIAL_FLAG = 0x0400;
+const int LgMoonlightstream::LGPADDLE1_FLAG = 0x010000;
+const int LgMoonlightstream::LGPADDLE2_FLAG = 0x020000;
+const int LgMoonlightstream::LGPADDLE3_FLAG = 0x040000;
+const int LgMoonlightstream::LGPADDLE4_FLAG = 0x080000;
+const int LgMoonlightstream::LGML_PORT_FLAG_ALL = 0xFFFFFFFF;
+const int LgMoonlightstream::LGML_PORT_FLAG_TCP_47984 = 0x0001;
+const int LgMoonlightstream::LGML_PORT_FLAG_TCP_47989 = 0x0002;
+const int LgMoonlightstream::LGML_PORT_FLAG_TCP_48010 = 0x0004;
+const int LgMoonlightstream::LGML_PORT_FLAG_UDP_47998 = 0x0100;
+const int LgMoonlightstream::LGML_PORT_FLAG_UDP_47999 = 0x0200;
+const int LgMoonlightstream::LGML_PORT_FLAG_UDP_48000 = 0x0400;
+const int LgMoonlightstream::LGML_PORT_FLAG_UDP_48010 = 0x0800;
 
-    STREAM_CONFIGURATION stream_config = {};
-    stream_config.width = width;
-    stream_config.height = height;
-    stream_config.fps = fps;
-    stream_config.bitrate = bitrate_kbps;
-    stream_config.packetSize = 1392;
-    stream_config.streamingRemotely = STREAM_CFG_LOCAL;
-    stream_config.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
-    stream_config.supportedVideoFormats = static_cast<int>(video_codec);
-    stream_config.colorSpace = static_cast<int>(color_space);
-    stream_config.colorRange = enable_hdr ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
+void LgMoonlightstream::_bind_methods() {
+    BIND_CONSTANT(LGSTAGE_NONE);
+    BIND_CONSTANT(LGSTAGE_PLATFORM_INIT);
+    BIND_CONSTANT(LGSTAGE_NAME_RESOLUTION);
+    BIND_CONSTANT(LGSTAGE_AUDIO_STREAM_INIT);
+    BIND_CONSTANT(LGSTAGE_RTSP_HANDSHAKE);
+    BIND_CONSTANT(LGSTAGE_CONTROL_STREAM_INIT);
+    BIND_CONSTANT(LGSTAGE_VIDEO_STREAM_INIT);
+    BIND_CONSTANT(LGSTAGE_INPUT_STREAM_INIT);
+    BIND_CONSTANT(LGSTAGE_CONTROL_STREAM_START);
+    BIND_CONSTANT(LGSTAGE_VIDEO_STREAM_START);
+    BIND_CONSTANT(LGSTAGE_AUDIO_STREAM_START);
+    BIND_CONSTANT(LGSTAGE_INPUT_STREAM_START);
+    BIND_CONSTANT(LGSTAGE_MAX);
+    BIND_CONSTANT(LGML_ERROR_GRACEFUL_TERMINATION);
+    BIND_CONSTANT(LGML_ERROR_NO_VIDEO_TRAFFIC);
+    BIND_CONSTANT(LGML_ERROR_NO_VIDEO_FRAME);
+    BIND_CONSTANT(LGML_ERROR_UNEXPECTED_EARLY_TERMINATION);
+    BIND_CONSTANT(LGML_ERROR_PROTECTED_CONTENT);
+    BIND_CONSTANT(LGML_ERROR_FRAME_CONVERSION);
+    BIND_CONSTANT(LGSS_KBE_FLAG_NON_NORMALIZED);
+    BIND_CONSTANT(LGA_FLAG);
+    BIND_CONSTANT(LGB_FLAG);
+    BIND_CONSTANT(LGX_FLAG);
+    BIND_CONSTANT(LGY_FLAG);
+    BIND_CONSTANT(LGUP_FLAG);
+    BIND_CONSTANT(LGDOWN_FLAG);
+    BIND_CONSTANT(LGLEFT_FLAG);
+    BIND_CONSTANT(LGRIGHT_FLAG);
+    BIND_CONSTANT(LGLB_FLAG);
+    BIND_CONSTANT(LGRB_FLAG);
+    BIND_CONSTANT(LGPLAY_FLAG);
+    BIND_CONSTANT(LGBACK_FLAG);
+    BIND_CONSTANT(LGLS_CLK_FLAG);
+    BIND_CONSTANT(LGRS_CLK_FLAG);
+    BIND_CONSTANT(LGSPECIAL_FLAG);
+    BIND_CONSTANT(LGPADDLE1_FLAG);
+    BIND_CONSTANT(LGPADDLE2_FLAG);
+    BIND_CONSTANT(LGPADDLE3_FLAG);
+    BIND_CONSTANT(LGPADDLE4_FLAG);
+    BIND_CONSTANT(LGML_PORT_FLAG_ALL);
+    BIND_CONSTANT(LGML_PORT_FLAG_TCP_47984);
+    BIND_CONSTANT(LGML_PORT_FLAG_TCP_47989);
+    BIND_CONSTANT(LGML_PORT_FLAG_TCP_48010);
+    BIND_CONSTANT(LGML_PORT_FLAG_UDP_47998);
+    BIND_CONSTANT(LGML_PORT_FLAG_UDP_47999);
+    BIND_CONSTANT(LGML_PORT_FLAG_UDP_48000);
+    BIND_CONSTANT(LGML_PORT_FLAG_UDP_48010);
+    ClassDB::bind_method(D_METHOD("LgLiGetLaunchUrlQueryParameters"), &LgMoonlightstream::LgLiGetLaunchUrlQueryParameters);
+    ClassDB::bind_method(D_METHOD("LgLiInitializeStreamConfiguration", "streamConfig"), &LgMoonlightstream::LgLiInitializeStreamConfiguration);
+    ClassDB::bind_method(D_METHOD("LgLiInitializeVideoCallbacks", "drCallbacks"), &LgMoonlightstream::LgLiInitializeVideoCallbacks);
+    ClassDB::bind_method(D_METHOD("LgLiInitializeAudioCallbacks", "arCallbacks"), &LgMoonlightstream::LgLiInitializeAudioCallbacks);
+    ClassDB::bind_method(D_METHOD("LgLiInitializeConnectionCallbacks", "clCallbacks"), &LgMoonlightstream::LgLiInitializeConnectionCallbacks);
+    ClassDB::bind_method(D_METHOD("LgLiInitializeServerInformation", "serverInfo"), &LgMoonlightstream::LgLiInitializeServerInformation);
+    ClassDB::bind_method(D_METHOD("LgLiStartConnection", "serverInfo, streamConfig, clCallbacks, drCallbacks, arCallbacks, renderContext, drFlags, audioContext, arFlags"), &LgMoonlightstream::LgLiStartConnection);
+    ClassDB::bind_method(D_METHOD("LgLiStopConnection"), &LgMoonlightstream::LgLiStopConnection);
+    ClassDB::bind_method(D_METHOD("LgLiInterruptConnection"), &LgMoonlightstream::LgLiInterruptConnection);
+    ClassDB::bind_method(D_METHOD("LgLiGetStageName", "stage"), &LgMoonlightstream::LgLiGetStageName);
+    ClassDB::bind_method(D_METHOD("LgLiGetEstimatedRttInfo", "estimatedRtt, estimatedRttVariance"), &LgMoonlightstream::LgLiGetEstimatedRttInfo);
+    ClassDB::bind_method(D_METHOD("LgLiSendMouseMoveEvent", "deltaX, deltaY"), &LgMoonlightstream::LgLiSendMouseMoveEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendMousePositionEvent", "x, y, referenceWidth, referenceHeight"), &LgMoonlightstream::LgLiSendMousePositionEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendMouseMoveAsMousePositionEvent", "deltaX, deltaY, referenceWidth, referenceHeight"), &LgMoonlightstream::LgLiSendMouseMoveAsMousePositionEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendTouchEvent", "eventType, pointerId, x, y, pressureOrDistance, contactAreaMajor, contactAreaMinor, rotation"), &LgMoonlightstream::LgLiSendTouchEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendPenEvent", "eventType, toolType, penButtons, x, y, pressureOrDistance, contactAreaMajor, contactAreaMinor, rotation, tilt"), &LgMoonlightstream::LgLiSendPenEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendMouseButtonEvent", "action, button"), &LgMoonlightstream::LgLiSendMouseButtonEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendKeyboardEvent", "keyCode, keyAction, modifiers"), &LgMoonlightstream::LgLiSendKeyboardEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendKeyboardEvent2", "keyCode, keyAction, modifiers, flags"), &LgMoonlightstream::LgLiSendKeyboardEvent2);
+    ClassDB::bind_method(D_METHOD("LgLiSendUtf8TextEvent", "arg0, length"), &LgMoonlightstream::LgLiSendUtf8TextEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendControllerEvent", "buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY"), &LgMoonlightstream::LgLiSendControllerEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendMultiControllerEvent", "controllerNumber, activeGamepadMask, buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY"), &LgMoonlightstream::LgLiSendMultiControllerEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendControllerArrivalEvent", "controllerNumber, activeGamepadMask, type, supportedButtonFlags, capabilities"), &LgMoonlightstream::LgLiSendControllerArrivalEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendControllerTouchEvent", "controllerNumber, eventType, pointerId, x, y, pressure"), &LgMoonlightstream::LgLiSendControllerTouchEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendControllerMotionEvent", "controllerNumber, motionType, x, y, z"), &LgMoonlightstream::LgLiSendControllerMotionEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendControllerBatteryEvent", "controllerNumber, batteryState, batteryPercentage"), &LgMoonlightstream::LgLiSendControllerBatteryEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendScrollEvent", "scrollClicks"), &LgMoonlightstream::LgLiSendScrollEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendHighResScrollEvent", "scrollAmount"), &LgMoonlightstream::LgLiSendHighResScrollEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendHScrollEvent", "scrollClicks"), &LgMoonlightstream::LgLiSendHScrollEvent);
+    ClassDB::bind_method(D_METHOD("LgLiSendHighResHScrollEvent", "scrollAmount"), &LgMoonlightstream::LgLiSendHighResHScrollEvent);
+    ClassDB::bind_method(D_METHOD("LgLiGetMicroseconds"), &LgMoonlightstream::LgLiGetMicroseconds);
+    ClassDB::bind_method(D_METHOD("LgLiGetMillis"), &LgMoonlightstream::LgLiGetMillis);
+    ClassDB::bind_method(D_METHOD("LgLiFindExternalAddressIP4", "stunServer, stunPort"), &LgMoonlightstream::LgLiFindExternalAddressIP4);
+    ClassDB::bind_method(D_METHOD("LgLiGetPendingVideoFrames"), &LgMoonlightstream::LgLiGetPendingVideoFrames);
+    ClassDB::bind_method(D_METHOD("LgLiGetPendingAudioFrames"), &LgMoonlightstream::LgLiGetPendingAudioFrames);
+    ClassDB::bind_method(D_METHOD("LgLiGetPendingAudioDuration"), &LgMoonlightstream::LgLiGetPendingAudioDuration);
+    ClassDB::bind_method(D_METHOD("LgLiGetRTPAudioStats"), &LgMoonlightstream::LgLiGetRTPAudioStats);
+    ClassDB::bind_method(D_METHOD("LgLiGetRTPVideoStats"), &LgMoonlightstream::LgLiGetRTPVideoStats);
+    ClassDB::bind_method(D_METHOD("LgLiGetPortFlagsFromStage", "stage"), &LgMoonlightstream::LgLiGetPortFlagsFromStage);
+    ClassDB::bind_method(D_METHOD("LgLiGetPortFlagsFromTerminationErrorCode", "errorCode"), &LgMoonlightstream::LgLiGetPortFlagsFromTerminationErrorCode);
+    ClassDB::bind_method(D_METHOD("LgLiGetProtocolFromPortFlagIndex", "portFlagIndex"), &LgMoonlightstream::LgLiGetProtocolFromPortFlagIndex);
+    ClassDB::bind_method(D_METHOD("LgLiGetPortFromPortFlagIndex", "portFlagIndex"), &LgMoonlightstream::LgLiGetPortFromPortFlagIndex);
+    ClassDB::bind_method(D_METHOD("LgLiStringifyPortFlags", "portFlags, separator, outputBufferLength"), &LgMoonlightstream::LgLiStringifyPortFlags);
+    ClassDB::bind_method(D_METHOD("LgLiTestClientConnectivity", "testServer, referencePort, testPortFlags"), &LgMoonlightstream::LgLiTestClientConnectivity);
+    ClassDB::bind_method(D_METHOD("LgLiWaitForNextVideoFrame", "frameHandle, decodeUnit"), &LgMoonlightstream::LgLiWaitForNextVideoFrame);
+    ClassDB::bind_method(D_METHOD("LgLiPollNextVideoFrame", "frameHandle, decodeUnit"), &LgMoonlightstream::LgLiPollNextVideoFrame);
+    ClassDB::bind_method(D_METHOD("LgLiPeekNextVideoFrame", "decodeUnit"), &LgMoonlightstream::LgLiPeekNextVideoFrame);
+    ClassDB::bind_method(D_METHOD("LgLiWakeWaitForVideoFrame"), &LgMoonlightstream::LgLiWakeWaitForVideoFrame);
+    ClassDB::bind_method(D_METHOD("LgLiCompleteVideoFrame", "handle, drStatus"), &LgMoonlightstream::LgLiCompleteVideoFrame);
+    ClassDB::bind_method(D_METHOD("LgLiGetCurrentHostDisplayHdrMode"), &LgMoonlightstream::LgLiGetCurrentHostDisplayHdrMode);
+    ClassDB::bind_method(D_METHOD("LgLiGetHdrMetadata", "metadata"), &LgMoonlightstream::LgLiGetHdrMetadata);
+    ClassDB::bind_method(D_METHOD("LgLiRequestIdrFrame"), &LgMoonlightstream::LgLiRequestIdrFrame);
+    ClassDB::bind_method(D_METHOD("LgLiGetHostFeatureFlags"), &LgMoonlightstream::LgLiGetHostFeatureFlags);
+    ADD_SIGNAL(MethodInfo("lgdecoder_renderer_setup", Variant::INT, Variant::INT, Variant::INT, Variant::INT, Variant::PACKED_BYTE_ARRAY, Variant::INT));
+    ADD_SIGNAL(MethodInfo("lgdecoder_renderer_start"));
+    ADD_SIGNAL(MethodInfo("lgdecoder_renderer_stop"));
+    ADD_SIGNAL(MethodInfo("lgdecoder_renderer_cleanup"));
+    ADD_SIGNAL(MethodInfo("lgdecoder_renderer_submit_decode_unit", Variant::OBJECT));
+    ADD_SIGNAL(MethodInfo("lgaudio_renderer_init", Variant::INT, Variant::OBJECT, Variant::PACKED_BYTE_ARRAY, Variant::INT));
+    ADD_SIGNAL(MethodInfo("lgaudio_renderer_start"));
+    ADD_SIGNAL(MethodInfo("lgaudio_renderer_stop"));
+    ADD_SIGNAL(MethodInfo("lgaudio_renderer_cleanup"));
+    ADD_SIGNAL(MethodInfo("lgaudio_renderer_decode_and_play_sample", Variant::STRING, Variant::INT));
+    ADD_SIGNAL(MethodInfo("lgconn_stage_starting", Variant::INT));
+    ADD_SIGNAL(MethodInfo("lgconn_stage_complete", Variant::INT));
+    ADD_SIGNAL(MethodInfo("lgconn_stage_failed", Variant::INT, Variant::INT));
+    ADD_SIGNAL(MethodInfo("lgconn_connection_started"));
+    ADD_SIGNAL(MethodInfo("lgconn_connection_terminated", Variant::INT));
+    ADD_SIGNAL(MethodInfo("lgconn_log_message", Variant::STRING, Variant::OBJECT));
+    ADD_SIGNAL(MethodInfo("lgconn_rumble", Variant::OBJECT, Variant::OBJECT, Variant::OBJECT));
+    ADD_SIGNAL(MethodInfo("lgconn_connection_status_update", Variant::INT));
+    ADD_SIGNAL(MethodInfo("lgconn_set_hdr_mode", Variant::BOOL));
+    ADD_SIGNAL(MethodInfo("lgconn_rumble_triggers", Variant::OBJECT, Variant::OBJECT, Variant::OBJECT));
+    ADD_SIGNAL(MethodInfo("lgconn_set_motion_event_state", Variant::OBJECT, Variant::OBJECT, Variant::OBJECT));
+    ADD_SIGNAL(MethodInfo("lgconn_set_adaptive_triggers", Variant::OBJECT, Variant::OBJECT, Variant::OBJECT, Variant::OBJECT, Variant::OBJECT, Variant::OBJECT));
+    ADD_SIGNAL(MethodInfo("lgconn_set_controller_led", Variant::OBJECT, Variant::OBJECT, Variant::OBJECT, Variant::OBJECT));
+}
 
-    // 填充 AES 密钥
-    memcpy(stream_config.remoteInputAesKey, custom_aes_key.ptr(), 16);
-    memcpy(stream_config.remoteInputAesIv, custom_aes_iv.ptr(), 4);
-    memset(stream_config.remoteInputAesIv + 4, 0, 12);
+String LgMoonlightstream::LgLiGetLaunchUrlQueryParameters() {
+    return LiGetLaunchUrlQueryParameters();
+}
 
-    // 准备回调
-    DECODER_RENDERER_CALLBACKS dr_callbacks = {};
-    dr_callbacks.setup = dr_setup;
-    dr_callbacks.submitDecodeUnit = dr_submit_decode_unit;
-    dr_callbacks.cleanup = dr_cleanup;
-    dr_callbacks.capabilities = CAPABILITY_DIRECT_SUBMIT;
+// void LgMoonlightstream::LgLiInitializeStreamConfiguration(Variant p_streamConfig) {
+//     return LiInitializeStreamConfiguration(static_cast<PSTREAM_CONFIGURATION>(p_streamConfig));
+// }
 
-    AUDIO_RENDERER_CALLBACKS ar_callbacks = {};
-    ar_callbacks.init = ar_init;
-    ar_callbacks.decodeAndPlaySample = ar_decode_and_play_sample;
-    ar_callbacks.capabilities = CAPABILITY_DIRECT_SUBMIT;
+// void LgMoonlightstream::LgLiInitializeVideoCallbacks(Variant p_drCallbacks) {
+//     return LiInitializeVideoCallbacks(static_cast<PDECODER_RENDERER_CALLBACKS>(p_drCallbacks));
+// }
 
-    CONNECTION_LISTENER_CALLBACKS cl_callbacks = {};
-    // 由于 C 回调签名不带 context，我们使用 lambda 并访问全局静态指针
-    cl_callbacks.stageStarting = [](int stage) { 
-        UtilityFunctions::print("Moonlight Stage Starting: ", stage); 
+// void LgMoonlightstream::LgLiInitializeAudioCallbacks(Variant p_arCallbacks) {
+//     return LiInitializeAudioCallbacks(static_cast<PAUDIO_RENDERER_CALLBACKS>(p_arCallbacks));
+// }
+
+// void LgMoonlightstream::LgLiInitializeConnectionCallbacks(Variant p_clCallbacks) {
+//     return LiInitializeConnectionCallbacks(static_cast<PCONNECTION_LISTENER_CALLBACKS>(p_clCallbacks));
+// }
+
+// void LgMoonlightstream::LgLiInitializeServerInformation(Variant p_serverInfo) {
+//     return LiInitializeServerInformation(static_cast<PSERVER_INFORMATION>(p_serverInfo));
+// }
+
+// int LgMoonlightstream::LgLiStartConnection(Variant p_serverInfo, Variant p_streamConfig, Variant p_clCallbacks, Variant p_drCallbacks, Variant p_arCallbacks, PackedByteArray p_renderContext, int p_drFlags, PackedByteArray p_audioContext, int p_arFlags) {
+//     return LiStartConnection(static_cast<PSERVER_INFORMATION>(p_serverInfo), static_cast<PSTREAM_CONFIGURATION>(p_streamConfig), static_cast<PCONNECTION_LISTENER_CALLBACKS>(p_clCallbacks), static_cast<PDECODER_RENDERER_CALLBACKS>(p_drCallbacks), static_cast<PAUDIO_RENDERER_CALLBACKS>(p_arCallbacks), static_cast<void>(p_renderContext), static_cast<int>(p_drFlags), static_cast<void>(p_audioContext), static_cast<int>(p_arFlags));
+// }
+
+void LgMoonlightstream::LgLiStopConnection() {
+    return LiStopConnection();
+}
+
+void LgMoonlightstream::LgLiInterruptConnection() {
+    return LiInterruptConnection();
+}
+
+String LgMoonlightstream::LgLiGetStageName(int p_stage) {
+    return LiGetStageName(static_cast<int>(p_stage));
+}
+
+// bool LgMoonlightstream::LgLiGetEstimatedRttInfo(PackedByteArray p_estimatedRtt, PackedByteArray p_estimatedRttVariance) {
+//     return LiGetEstimatedRttInfo(static_cast<uint32_t>(p_estimatedRtt), static_cast<uint32_t>(p_estimatedRttVariance));
+// }
+
+int LgMoonlightstream::LgLiSendMouseMoveEvent(int p_deltaX, int p_deltaY) {
+    return LiSendMouseMoveEvent(static_cast<short>(p_deltaX), static_cast<short>(p_deltaY));
+}
+
+int LgMoonlightstream::LgLiSendMousePositionEvent(int p_x, int p_y, int p_referenceWidth, int p_referenceHeight) {
+    return LiSendMousePositionEvent(static_cast<short>(p_x), static_cast<short>(p_y), static_cast<short>(p_referenceWidth), static_cast<short>(p_referenceHeight));
+}
+
+int LgMoonlightstream::LgLiSendMouseMoveAsMousePositionEvent(int p_deltaX, int p_deltaY, int p_referenceWidth, int p_referenceHeight) {
+    return LiSendMouseMoveAsMousePositionEvent(static_cast<short>(p_deltaX), static_cast<short>(p_deltaY), static_cast<short>(p_referenceWidth), static_cast<short>(p_referenceHeight));
+}
+
+int LgMoonlightstream::LgLiSendTouchEvent(Variant p_eventType, int p_pointerId, double p_x, double p_y, double p_pressureOrDistance, double p_contactAreaMajor, double p_contactAreaMinor, Variant p_rotation) {
+    return LiSendTouchEvent(static_cast<uint8_t>(p_eventType), static_cast<uint32_t>(p_pointerId), static_cast<float>(p_x), static_cast<float>(p_y), static_cast<float>(p_pressureOrDistance), static_cast<float>(p_contactAreaMajor), static_cast<float>(p_contactAreaMinor), static_cast<uint16_t>(p_rotation));
+}
+
+int LgMoonlightstream::LgLiSendPenEvent(Variant p_eventType, Variant p_toolType, Variant p_penButtons, double p_x, double p_y, double p_pressureOrDistance, double p_contactAreaMajor, double p_contactAreaMinor, Variant p_rotation, Variant p_tilt) {
+    return LiSendPenEvent(static_cast<uint8_t>(p_eventType), static_cast<uint8_t>(p_toolType), static_cast<uint8_t>(p_penButtons), static_cast<float>(p_x), static_cast<float>(p_y), static_cast<float>(p_pressureOrDistance), static_cast<float>(p_contactAreaMajor), static_cast<float>(p_contactAreaMinor), static_cast<uint16_t>(p_rotation), static_cast<uint8_t>(p_tilt));
+}
+
+int LgMoonlightstream::LgLiSendMouseButtonEvent(int p_action, int p_button) {
+    return LiSendMouseButtonEvent(static_cast<char>(p_action), static_cast<int>(p_button));
+}
+
+int LgMoonlightstream::LgLiSendKeyboardEvent(int p_keyCode, int p_keyAction, int p_modifiers) {
+    return LiSendKeyboardEvent(static_cast<short>(p_keyCode), static_cast<char>(p_keyAction), static_cast<char>(p_modifiers));
+}
+
+int LgMoonlightstream::LgLiSendKeyboardEvent2(int p_keyCode, int p_keyAction, int p_modifiers, int p_flags) {
+    return LiSendKeyboardEvent2(static_cast<short>(p_keyCode), static_cast<char>(p_keyAction), static_cast<char>(p_modifiers), static_cast<char>(p_flags));
+}
+
+int LgMoonlightstream::LgLiSendUtf8TextEvent(String p_arg0, int p_length) {
+    return LiSendUtf8TextEvent(static_cast<const char*>(p_arg0.utf8().get_data()), static_cast<unsigned int>(p_length));
+}
+
+int LgMoonlightstream::LgLiSendControllerEvent(int p_buttonFlags, Variant p_leftTrigger, Variant p_rightTrigger, int p_leftStickX, int p_leftStickY, int p_rightStickX, int p_rightStickY) {
+    return LiSendControllerEvent(static_cast<int>(p_buttonFlags), static_cast<unsigned char>(p_leftTrigger), static_cast<unsigned char>(p_rightTrigger), static_cast<short>(p_leftStickX), static_cast<short>(p_leftStickY), static_cast<short>(p_rightStickX), static_cast<short>(p_rightStickY));
+}
+
+int LgMoonlightstream::LgLiSendMultiControllerEvent(int p_controllerNumber, int p_activeGamepadMask, int p_buttonFlags, Variant p_leftTrigger, Variant p_rightTrigger, int p_leftStickX, int p_leftStickY, int p_rightStickX, int p_rightStickY) {
+    return LiSendMultiControllerEvent(static_cast<short>(p_controllerNumber), static_cast<short>(p_activeGamepadMask), static_cast<int>(p_buttonFlags), static_cast<unsigned char>(p_leftTrigger), static_cast<unsigned char>(p_rightTrigger), static_cast<short>(p_leftStickX), static_cast<short>(p_leftStickY), static_cast<short>(p_rightStickX), static_cast<short>(p_rightStickY));
+}
+
+int LgMoonlightstream::LgLiSendControllerArrivalEvent(Variant p_controllerNumber, Variant p_activeGamepadMask, Variant p_type, int p_supportedButtonFlags, Variant p_capabilities) {
+    return LiSendControllerArrivalEvent(static_cast<uint8_t>(p_controllerNumber), static_cast<uint16_t>(p_activeGamepadMask), static_cast<uint8_t>(p_type), static_cast<uint32_t>(p_supportedButtonFlags), static_cast<uint16_t>(p_capabilities));
+}
+
+int LgMoonlightstream::LgLiSendControllerTouchEvent(Variant p_controllerNumber, Variant p_eventType, int p_pointerId, double p_x, double p_y, double p_pressure) {
+    return LiSendControllerTouchEvent(static_cast<uint8_t>(p_controllerNumber), static_cast<uint8_t>(p_eventType), static_cast<uint32_t>(p_pointerId), static_cast<float>(p_x), static_cast<float>(p_y), static_cast<float>(p_pressure));
+}
+
+int LgMoonlightstream::LgLiSendControllerMotionEvent(Variant p_controllerNumber, Variant p_motionType, double p_x, double p_y, double p_z) {
+    return LiSendControllerMotionEvent(static_cast<uint8_t>(p_controllerNumber), static_cast<uint8_t>(p_motionType), static_cast<float>(p_x), static_cast<float>(p_y), static_cast<float>(p_z));
+}
+
+int LgMoonlightstream::LgLiSendControllerBatteryEvent(Variant p_controllerNumber, Variant p_batteryState, Variant p_batteryPercentage) {
+    return LiSendControllerBatteryEvent(static_cast<uint8_t>(p_controllerNumber), static_cast<uint8_t>(p_batteryState), static_cast<uint8_t>(p_batteryPercentage));
+}
+
+int LgMoonlightstream::LgLiSendScrollEvent(Variant p_scrollClicks) {
+    return LiSendScrollEvent(static_cast<signed char>(p_scrollClicks));
+}
+
+int LgMoonlightstream::LgLiSendHighResScrollEvent(int p_scrollAmount) {
+    return LiSendHighResScrollEvent(static_cast<short>(p_scrollAmount));
+}
+
+int LgMoonlightstream::LgLiSendHScrollEvent(Variant p_scrollClicks) {
+    return LiSendHScrollEvent(static_cast<signed char>(p_scrollClicks));
+}
+
+int LgMoonlightstream::LgLiSendHighResHScrollEvent(int p_scrollAmount) {
+    return LiSendHighResHScrollEvent(static_cast<short>(p_scrollAmount));
+}
+
+Variant LgMoonlightstream::LgLiGetMicroseconds() {
+    return LiGetMicroseconds();
+}
+
+Variant LgMoonlightstream::LgLiGetMillis() {
+    return LiGetMillis();
+}
+
+Dictionary LgMoonlightstream::LgLiFindExternalAddressIP4(String p_stunServer, Variant p_stunPort) {
+    Dictionary result;
+    std::string s_stunServer = p_stunServer.utf8().get_data();
+    const char* c_stunServer = s_stunServer.c_str();
+    auto c_stunPort = static_cast<unsigned short>(p_stunPort);
+    unsigned int c_wanAddr = 0; // 创建一个unsigned int变量
+    int ret_val = LiFindExternalAddressIP4(c_stunServer, c_stunPort, &c_wanAddr); // 传递其指针
+    result["error"] = ret_val;
+
+    // 将unsigned int类型的IP地址转换为uint8_t数组
+    uint8_t wanAddrBytes[4] = {
+        static_cast<uint8_t>((c_wanAddr >> 24) & 0xFF),
+        static_cast<uint8_t>((c_wanAddr >> 16) & 0xFF),
+        static_cast<uint8_t>((c_wanAddr >> 8) & 0xFF),
+        static_cast<uint8_t>(c_wanAddr & 0xFF)
     };
-    cl_callbacks.stageFailed = [](int stage, int error) {
-        UtilityFunctions::push_warning(vformat("Moonlight Stage %d Failed: %d", stage, error));
-    };
-    cl_callbacks.connectionStarted = []() {
-        UtilityFunctions::print("Moonlight Connection Started!");
-        if (global_active_stream) {
-            global_active_stream->_emit_connection_started();
-        }
-    };
-    cl_callbacks.connectionTerminated = [](int error) {
-        UtilityFunctions::print("Moonlight Connection Terminated: ", error);
-        // 此时 LiStartConnection 可能还没返回，我们在线程结束处统一发信号
-    };
-    // Log 也可以加，看需求
 
-    void* render_context = this; // 传给 video/audio callback 的 context
-    
-    // === 阻塞调用 ===
-    int ret = LiStartConnection(
-        &server_info,
-        &stream_config,
-        &cl_callbacks,
-        &dr_callbacks,
-        &ar_callbacks,
-        render_context,
-        0,
-        render_context, // Audio context
-        0
-    );
-
-    // 连接结束
-    streaming.store(false);
-    if (global_active_stream == this) {
-        global_active_stream = nullptr;
-    }
-
-    // 通知主线程连接已结束
-    call_deferred("_emit_connection_terminated", ret);
+    // 将转换后的数组作为Variant传递给Dictionary
+    result["wanAddr"] = wanAddrBytes;
+    return result;
 }
 
-void MoonlightStream::stop_connection() {
-    // 1. 发出停止指令，打破阻塞
-    if (streaming.load()) {
-        LiStopConnection();
-    }
 
-    // 2. 等待线程完全退出
-    if (connection_thread.joinable()) {
-        connection_thread.join();
-    }
-    
-    // 3. 状态清理
-    streaming.store(false);
-    if (global_active_stream == this) {
-        global_active_stream = nullptr;
-    }
+int LgMoonlightstream::LgLiGetPendingVideoFrames() {
+    return LiGetPendingVideoFrames();
 }
 
-// ============ Signal Helpers (run on Main Thread via call_deferred) ============
-void MoonlightStream::_emit_connection_started() {
-    // 再次通过 call_deferred 确保万无一失（虽然从 lambda 调过来已经是 deferred）
-    call_deferred("emit_signal", "connection_started");
+int LgMoonlightstream::LgLiGetPendingAudioFrames() {
+    return LiGetPendingAudioFrames();
 }
 
-void MoonlightStream::_emit_connection_terminated(int error_code) {
-    call_deferred("emit_signal", "connection_terminated", error_code);
+int LgMoonlightstream::LgLiGetPendingAudioDuration() {
+    return LiGetPendingAudioDuration();
 }
 
-// ============ Frame Rendering ============
-int MoonlightStream::_on_submit_decode_unit(PDECODE_UNIT decode_unit) {
-    if (!streaming.load() || width <= 0 || height <= 0 || (width & 1) || (height & 1)) {
-        return DR_OK;
-    }
+// Ref<LgRTP_AUDIO_STATS> LgMoonlightstream::LgLiGetRTPAudioStats() {
+//     return LiGetRTPAudioStats();
+// }
 
-    size_t y_size = width * height;
-    size_t uv_size = (width / 2) * (height / 2);
-    size_t total_expected = y_size + uv_size * 2;
-    uint8_t* full_buffer = new uint8_t[total_expected];
-    size_t offset = 0;
-    PLENTRY entry = decode_unit->bufferList;
-    while (entry && offset < total_expected) {
-        size_t len = (offset + entry->length <= total_expected) ? entry->length : (total_expected - offset);
-        std::memcpy(full_buffer + offset, entry->data, len);
-        offset += entry->length;
-        entry = entry->next;
-    }
+// Ref<LgRTP_VIDEO_STATS> LgMoonlightstream::LgLiGetRTPVideoStats() {
+//     return LiGetRTPVideoStats();
+// }
 
-    if (offset < total_expected) {
-        delete[] full_buffer;
-        return DR_OK;
-    }
-
-    const uint8_t* y = full_buffer;
-    const uint8_t* u = full_buffer + y_size;
-    const uint8_t* v = full_buffer + y_size + uv_size;
-    size_t rgba_size = width * height * 4;
-    uint8_t* rgba = new uint8_t[rgba_size];
-    yuv420p_to_rgba(y, u, v, rgba, width, height);
-
-    PackedByteArray image_data;
-    image_data.resize(rgba_size);
-    memcpy(image_data.ptrw(), rgba, rgba_size);
-
-    {
-        std::lock_guard<std::mutex> lock(frame_mutex);
-        pending_frame = image_data;
-        has_pending_frame = true;
-    }
-
-    delete[] rgba;
-    delete[] full_buffer;
-    return DR_OK;
+int LgMoonlightstream::LgLiGetPortFlagsFromStage(int p_stage) {
+    return LiGetPortFlagsFromStage(static_cast<int>(p_stage));
 }
 
-// ============ Main Thread Process ============
-void MoonlightStream::_process(double delta) {
-    PackedByteArray frame;
-    bool update = false;
-    {
-        std::lock_guard<std::mutex> lock(frame_mutex);
-        if (has_pending_frame) {
-            frame = pending_frame;
-            has_pending_frame = false;
-            update = true;
-        }
-    }
-
-    if (update) {
-        Ref<Image> image = Image::create_from_data(width, height, false, Image::FORMAT_RGBA8, frame);
-        RenderingServer::get_singleton()->texture_2d_update(texture_rid, image, 0);
-    }
+int LgMoonlightstream::LgLiGetPortFlagsFromTerminationErrorCode(int p_errorCode) {
+    return LiGetPortFlagsFromTerminationErrorCode(static_cast<int>(p_errorCode));
 }
 
-// ============ Input ============
-void MoonlightStream::send_mouse_button_event(int button, bool pressed) {
-    if (streaming.load()) LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, button);
+int LgMoonlightstream::LgLiGetProtocolFromPortFlagIndex(int p_portFlagIndex) {
+    return LiGetProtocolFromPortFlagIndex(static_cast<int>(p_portFlagIndex));
 }
 
-void MoonlightStream::send_mouse_move_event(float x, float y) {
-    if (streaming.load()) LiSendMouseMoveEvent(static_cast<short>(x), static_cast<short>(y));
+Variant LgMoonlightstream::LgLiGetPortFromPortFlagIndex(int p_portFlagIndex) {
+    return LiGetPortFromPortFlagIndex(static_cast<int>(p_portFlagIndex));
 }
 
-void MoonlightStream::send_key_event(int scancode, bool pressed) {
-    if (streaming.load()) LiSendKeyboardEvent(static_cast<short>(scancode), pressed ? KEY_ACTION_DOWN : KEY_ACTION_UP, 0);
+Dictionary LgMoonlightstream::LgLiStringifyPortFlags(int p_portFlags, String p_separator, int p_outputBufferLength) {
+    Dictionary result;
+    auto c_portFlags = static_cast<unsigned int>(p_portFlags);
+    std::string s_separator = p_separator.utf8().get_data();
+    const char* c_separator = s_separator.c_str();
+    char c_outputBuffer[256] = {0};
+    auto c_outputBufferLength = static_cast<int>(p_outputBufferLength);
+    LiStringifyPortFlags(c_portFlags, c_separator, c_outputBuffer, c_outputBufferLength);
+    // result["error"] = ret_val;
+    result["outputBuffer"] = String(c_outputBuffer);
+    return result;
 }
 
-void MoonlightStream::set_remote_input_aes_key(const PackedByteArray &p_key) {
-    custom_aes_key = p_key;
+int LgMoonlightstream::LgLiTestClientConnectivity(String p_testServer, Variant p_referencePort, int p_testPortFlags) {
+    std::string s_testServer = p_testServer.utf8().get_data();
+    return LiTestClientConnectivity(s_testServer.c_str(), static_cast<unsigned short>(p_referencePort), static_cast<unsigned int>(p_testPortFlags));
 }
 
-void MoonlightStream::set_remote_input_aes_iv(const PackedByteArray &p_iv) {
-    custom_aes_iv = p_iv;
+// bool LgMoonlightstream::LgLiWaitForNextVideoFrame(PackedByteArray p_frameHandle, PackedByteArray p_decodeUnit) {
+//     return LiWaitForNextVideoFrame(static_cast<VIDEO_FRAME_HANDLE>(p_frameHandle), static_cast<PDECODE_UNIT>(p_decodeUnit));
+// }
+
+// bool LgMoonlightstream::LgLiPollNextVideoFrame(PackedByteArray p_frameHandle, PackedByteArray p_decodeUnit) {
+//     return LiPollNextVideoFrame(static_cast<VIDEO_FRAME_HANDLE>(p_frameHandle), static_cast<PDECODE_UNIT>(p_decodeUnit));
+// }
+
+// bool LgMoonlightstream::LgLiPeekNextVideoFrame(PackedByteArray p_decodeUnit) {
+//     return LiPeekNextVideoFrame(static_cast<PDECODE_UNIT>(p_decodeUnit));
+// }
+
+void LgMoonlightstream::LgLiWakeWaitForVideoFrame() {
+    return LiWakeWaitForVideoFrame();
 }
+
+void LgMoonlightstream::LgLiCompleteVideoFrame(Variant p_handle, int p_drStatus) {
+    return LiCompleteVideoFrame(static_cast<VIDEO_FRAME_HANDLE>(p_handle), static_cast<int>(p_drStatus));
+}
+
+bool LgMoonlightstream::LgLiGetCurrentHostDisplayHdrMode() {
+    return LiGetCurrentHostDisplayHdrMode();
+}
+
+// bool LgMoonlightstream::LgLiGetHdrMetadata(Variant p_metadata) {
+//     return LiGetHdrMetadata(static_cast<PSS_HDR_METADATA>(p_metadata));
+// }
+
+void LgMoonlightstream::LgLiRequestIdrFrame() {
+    return LiRequestIdrFrame();
+}
+
+int LgMoonlightstream::LgLiGetHostFeatureFlags() {
+    return LiGetHostFeatureFlags();
+}
+
+void LgMoonlightstream::set_decoderrenderersetup_callback(Callable p_callback) {
+    callback_DecoderRendererSetup = p_callback;
+}
+
+void LgMoonlightstream::set_decoderrendererstart_callback(Callable p_callback) {
+    callback_DecoderRendererStart = p_callback;
+}
+
+void LgMoonlightstream::set_decoderrendererstop_callback(Callable p_callback) {
+    callback_DecoderRendererStop = p_callback;
+}
+
+void LgMoonlightstream::set_decoderrenderercleanup_callback(Callable p_callback) {
+    callback_DecoderRendererCleanup = p_callback;
+}
+
+void LgMoonlightstream::set_decoderrenderersubmitdecodeunit_callback(Callable p_callback) {
+    callback_DecoderRendererSubmitDecodeUnit = p_callback;
+}
+
+void LgMoonlightstream::set_audiorendererinit_callback(Callable p_callback) {
+    callback_AudioRendererInit = p_callback;
+}
+
+void LgMoonlightstream::set_audiorendererstart_callback(Callable p_callback) {
+    callback_AudioRendererStart = p_callback;
+}
+
+void LgMoonlightstream::set_audiorendererstop_callback(Callable p_callback) {
+    callback_AudioRendererStop = p_callback;
+}
+
+void LgMoonlightstream::set_audiorenderercleanup_callback(Callable p_callback) {
+    callback_AudioRendererCleanup = p_callback;
+}
+
+void LgMoonlightstream::set_audiorendererdecodeandplaysample_callback(Callable p_callback) {
+    callback_AudioRendererDecodeAndPlaySample = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenerstagestarting_callback(Callable p_callback) {
+    callback_ConnListenerStageStarting = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenerstagecomplete_callback(Callable p_callback) {
+    callback_ConnListenerStageComplete = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenerstagefailed_callback(Callable p_callback) {
+    callback_ConnListenerStageFailed = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenerconnectionstarted_callback(Callable p_callback) {
+    callback_ConnListenerConnectionStarted = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenerconnectionterminated_callback(Callable p_callback) {
+    callback_ConnListenerConnectionTerminated = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenerlogmessage_callback(Callable p_callback) {
+    callback_ConnListenerLogMessage = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenerrumble_callback(Callable p_callback) {
+    callback_ConnListenerRumble = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenerconnectionstatusupdate_callback(Callable p_callback) {
+    callback_ConnListenerConnectionStatusUpdate = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenersethdrmode_callback(Callable p_callback) {
+    callback_ConnListenerSetHdrMode = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenerrumbletriggers_callback(Callable p_callback) {
+    callback_ConnListenerRumbleTriggers = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenersetmotioneventstate_callback(Callable p_callback) {
+    callback_ConnListenerSetMotionEventState = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenersetadaptivetriggers_callback(Callable p_callback) {
+    callback_ConnListenerSetAdaptiveTriggers = p_callback;
+}
+
+void LgMoonlightstream::set_connlistenersetcontrollerled_callback(Callable p_callback) {
+    callback_ConnListenerSetControllerLED = p_callback;
+}
+
