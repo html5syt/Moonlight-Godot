@@ -5,12 +5,3 @@
 [submodule "src/lib/moonlight-common-c"]
 	path = src/lib/moonlight-common-c
 	url = https://github.com/moonlight-stream/moonlight-common-c
-[submodule "src/libs/mdns"]
-	path = src/libs/mdns
-	url = https://github.com/mjansson/mdns.git
-[submodule "src/lib/mdns"]
-	path = src/lib/mdns
-	url = https://github.com/mjansson/mdns.git
-[submodule "src/lib/mbedtls"]
-	path = src/lib/mbedtls
-	url = git@github.com:Mbed-TLS/mbedtls.git
