@@ -3,16 +3,20 @@
 	<brief_description>
 		用于通过 Moonlight（Nvidia GameStream） 协议串流远程游戏或应用画面与音频的节点。
 	</brief_description>
+
 	<description>
 		[MoonlightStream] 是一个封装了 [url=https://github.com/moonlight-stream/moonlight-common-c]Moonlight Common C[/url] 库的 Godot 节点，允许你连接到支持 NVIDIA GameStream 或 Sunshine 的主机，并实时接收视频与音频流。
 
 		该节点支持 H.264、HEVC 和 AV1 视频编解码器，可配置分辨率、帧率、码率、色彩空间及 HDR 模式。视频渲染通过内部 [SubViewport] 实现，音频通过 [AudioStreamGenerator] 输出。
 
-		使用前需先设置主机地址、应用 ID、服务器版本信息（来自 [/serverinfo] 接口）以及编解码能力支持标志等。随后调用 [method start_connection] 建立连接。
+		使用前需先设置主机地址、应用 ID、服务器版本信息（来自 [/serverinfo] 接口）、编解码能力支持标志以及远程输入加密密钥等。随后调用 [method start_connection] 建立连接。
 
-		[b]注意：[/b] 该节点为底层协议库，连接及配对逻辑等需要另外编写。
+		连接逻辑在内部使用后台线程执行，[method start_connection] 为异步接口：调用后会立即返回，连接成功与失败会通过 [signal connection_started]、[signal connection_terminated] 与 [signal connection_failed] 信号通知。
+
+		[b]注意：[/b]
+		- 本节点只负责底层串流协议，配对、发现、应用列表等逻辑需自行实现。
+		- 远程输入（键盘/鼠标）默认使用 AES 加密，必须调用 [method set_remote_input_aes_key] 与 [method set_remote_input_aes_iv] 提前配置正确的密钥和 IV。
 	</description>
-
 
 	<methods>
 		<method name="set_host_address">
@@ -71,13 +75,34 @@
 			</description>
 		</method>
 
+		<method name="set_server_rtsp_session_url">
+			<return type="void" />
+			<argument index="0" name="url" type="String" />
+			<description>
+				设置服务器返回的 RTSP 会话地址（通常为 Sunshine [/launch] 接口中的 [code]sessionUrl0[/code] 字段）。
+				如果留空，则使用默认的 RTSP 构建方式。
+			</description>
+		</method>
+		<method name="get_server_rtsp_session_url">
+			<return type="String" />
+			<description>
+				返回当前设置的 RTSP 会话地址。
+			</description>
+		</method>
+
 		<method name="set_resolution">
 			<return type="void" />
 			<argument index="0" name="width" type="int" />
 			<argument index="1" name="height" type="int" />
 			<description>
 				设置视频流的输出分辨率（宽 × 高）。必须为偶数尺寸（YUV420P 要求）。
-				[b]注意：[/b] 分辨率变更需在连接前设置，连接后修改无效。
+				[b]注意：[/b] 分辨率变更需在连接前设置，连接后修改仅影响内部视口大小，不会重新协商远程流参数。
+			</description>
+		</method>
+		<method name="get_resolution">
+			<return type="Vector2i" />
+			<description>
+				返回当前配置的分辨率（宽，高）。
 			</description>
 		</method>
 
@@ -146,7 +171,7 @@
 			<return type="void" />
 			<argument index="0" name="enable" type="bool" />
 			<description>
-				启用或禁用 HDR 模式。启用后将使用全范围色彩（[code]COLOR_RANGE_FULL[/code]）。
+				启用或禁用 HDR 模式。启用后将请求全范围色彩（[code]COLOR_RANGE_FULL[/code]）。
 				[b]注意：[/b] HDR 支持需主机与客户端显示器均兼容。
 			</description>
 		</method>
@@ -160,17 +185,24 @@
 		<method name="get_audio_stream">
 			<return type="AudioStreamGenerator" />
 			<description>
-				返回用于播放音频的 [AudioStreamGenerator] 实例。可将其连接到 [AudioStreamPlayer] 以监听声音。
+				返回用于播放音频的 [AudioStreamGenerator] 实例。
+				可以将其赋给 [AudioStreamPlayer] 的 [member AudioStreamPlayer.stream] 属性，并在连接开始前调用 [method AudioStreamPlayer.play] 以监听声音。
 			</description>
 		</method>
 
 		<method name="start_connection">
-			<return type="bool" />
+			<return type="void" />
 			<description>
-				开始连接到远程主机并启动音视频流。成功返回 [code]true[/code]，失败返回 [code]false[/code] 并输出错误日志。
+				开始连接到远程主机并启动音视频流。
 
-				[b]注意：[/b] 必须先设置 [member server_app_version] 和 [member server_codec_mode_support]，否则连接会失败。
-				[b]警告：[/b] 此方法为阻塞操作，建议在后台线程或异步上下文中调用以避免卡顿主线程。
+				此方法会启动一个后台线程调用 Moonlight 的 [code]LiStartConnection()[/code]，因此是[b]非阻塞[/b]的：调用后会立即返回，不会卡住主线程。
+
+				连接建立成功时会发出 [signal connection_started] 信号；连接结束（无论正常或错误）时会发出 [signal connection_terminated]；在参数未正确配置等本地错误场景下，会发出 [signal connection_failed]。
+
+				[b]前置条件：[/b]
+				- 必须设置 [member host_address]。
+				- 必须设置 [member server_app_version] 和 [member server_codec_mode_support]。
+				- 必须通过 [method set_remote_input_aes_key] / [method set_remote_input_aes_iv] 提供合法的 AES 密钥与 IV（用于远程输入加密）。
 			</description>
 		</method>
 
@@ -178,6 +210,9 @@
 			<return type="void" />
 			<description>
 				停止当前连接并释放相关资源。
+
+				内部会调用 Moonlight 的 [code]LiStopConnection()[/code] 打断正在进行的串流，并等待后台线程安全退出。
+				如果当前没有连接，调用此方法不会产生副作用。
 			</description>
 		</method>
 
@@ -186,7 +221,8 @@
 			<argument index="0" name="button" type="int" />
 			<argument index="1" name="pressed" type="bool" />
 			<description>
-				向远程主机发送鼠标按键事件。[code]button[/code] 使用 Moonlight 定义的常量（如 [code]MOUSE_BUTTON_LEFT = 0x01[/code]）。
+				向远程主机发送鼠标按键事件。[code]button[/code] 使用 Moonlight 定义的按钮常量
+				（例如 [code]MOUSE_BUTTON_LEFT = 0x01[/code]）。仅在连接建立后有效。
 			</description>
 		</method>
 
@@ -195,7 +231,8 @@
 			<argument index="0" name="x" type="float" />
 			<argument index="1" name="y" type="float" />
 			<description>
-				向远程主机发送鼠标移动事件。坐标基于当前流分辨率（即 [param x] ∈ [0, width], [param y] ∈ [0, height]）。
+				向远程主机发送鼠标移动事件。坐标基于当前流分辨率（即 [param x] ∈ [0, width]， [param y] ∈ [0, height]）。
+				仅在连接建立后有效。
 			</description>
 		</method>
 
@@ -205,6 +242,31 @@
 			<argument index="1" name="pressed" type="bool" />
 			<description>
 				向远程主机发送键盘按键事件。[code]scancode[/code] 应为 Godot 的 [code]KEY_*[/code] 常量（如 [constant KEY_SPACE]）。
+				仅在连接建立后有效。
+			</description>
+		</method>
+
+		<method name="set_remote_input_aes_key">
+			<return type="void" />
+			<argument index="0" name="key" type="PackedByteArray" />
+			<description>
+				设置远程输入（键盘/鼠标）使用的 AES-128 密钥。
+
+				[param key] 必须为长度为 16 字节的 [PackedByteArray]（即 128-bit key），通常来自 Sunshine 或 GFE [/launch] 返回的 [code]rikey[/code] 字段。
+
+				如果未设置或长度不为 16，则 [method start_connection] 会通过 [signal connection_failed] 报错。
+			</description>
+		</method>
+
+		<method name="set_remote_input_aes_iv">
+			<return type="void" />
+			<argument index="0" name="iv" type="PackedByteArray" />
+			<description>
+				设置远程输入 AES 加密的初始向量（IV）。
+
+				[param iv] 至少需要 4 字节（内部使用前 4 字节填充到协议字段，其余 12 字节由实现补 0），通常来自 Sunshine 或 GFE [/launch] 返回的 [code]rikeyid[/code] 字段或相关参数。
+
+				如果未设置或长度小于 4，则 [method start_connection] 会通过 [signal connection_failed] 报错。
 			</description>
 		</method>
 	</methods>
@@ -213,27 +275,39 @@
 		<member name="host_address" type="String" setter="set_host_address" getter="get_host_address">
 			目标主机的 IP 地址或域名。
 		</member>
+
 		<member name="app_id" type="int" setter="set_app_id" getter="get_app_id" default="0">
 			要启动的远程应用程序 ID（由 [/applist] 获取）。
 		</member>
+
 		<member name="server_app_version" type="String" setter="set_server_app_version" getter="get_server_app_version">
 			从 [/serverinfo] 获取的服务器应用版本字符串（必需）。
 		</member>
+
 		<member name="server_codec_mode_support" type="int" setter="set_server_codec_mode_support" getter="get_server_codec_mode_support" default="0">
 			从 [/serverinfo] 获取的编解码支持位掩码（必需）。
 		</member>
+
+		<member name="server_rtsp_session_url" type="String" setter="set_server_rtsp_session_url" getter="get_server_rtsp_session_url">
+			服务器 RTSP 会话地址（通常为 Sunshine [/launch] 返回的 [code]sessionUrl0[/code]），留空则使用默认地址推导。
+		</member>
+
 		<member name="fps" type="int" setter="set_fps" getter="get_fps" default="60">
 			视频流帧率（有效范围：10–120）。
 		</member>
+
 		<member name="bitrate_kbps" type="int" setter="set_bitrate_kbps" getter="get_bitrate_kbps" default="20000">
 			视频比特率（kbps，有效范围：500–100000）。
 		</member>
-		<member name="video_codec" type="int" setter="set_video_codec" getter="get_video_codec" enum="MoonlightStream.Codec" default="0">
-			使用的视频编解码器（见 [constant CODEC_H264] 等）。
+
+		<member name="video_codec" type="int" setter="set_video_codec" getter="get_video_codec" enum="MoonlightStream.Codec" default="1">
+			使用的视频编解码器（见 [constant CODEC_H264] 等）。默认使用 H.264。
 		</member>
+
 		<member name="color_space" type="int" setter="set_color_space" getter="get_color_space" enum="MoonlightStream.ColorSpace" default="1">
 			视频色彩空间标准（默认为 BT.709）。
 		</member>
+
 		<member name="enable_hdr" type="bool" setter="set_enable_hdr" getter="get_enable_hdr" default="false">
 			是否启用 HDR 模式。
 		</member>
@@ -249,6 +323,7 @@
 		<constant name="CODEC_AV1" value="4">
 			AV1 视频编解码器（8-bit 主配置）。
 		</constant>
+
 		<constant name="COLOR_SPACE_REC_601" value="0">
 			ITU-R BT.601 色彩空间（标清电视标准）。
 		</constant>
@@ -261,6 +336,30 @@
 	</constants>
 
 	<signals>
-		<!-- 本类暂无自定义信号 -->
+		<signal name="connection_started">
+			<description>
+				当与远程主机的连接成功建立，并且开始接收音视频数据时发出。
+			</description>
+		</signal>
+
+		<signal name="connection_terminated">
+			<argument index="0" name="error_code" type="int" />
+			<description>
+				当当前连接关闭时发出（无论是正常断开还是发生错误）。
+
+				[param error_code] 为 Moonlight 返回的错误码：
+				- [code]0[/code] 通常表示正常终止。
+				- 非 0 值表示发生错误，可对照 Moonlight Common C 文档进一步解码原因。
+			</description>
+		</signal>
+
+		<signal name="connection_failed">
+			<argument index="0" name="message" type="String" />
+			<description>
+				当在本地检查配置参数（例如未设置 [member server_app_version]、AES 密钥长度非法等）时发现错误，会在启动连接前立即发出该信号，并且不会真正尝试连接远程主机。
+
+				[param message] 为人类可读的错误信息，适合直接显示给用户或记录日志。
+			</description>
+		</signal>
 	</signals>
 </class>
