@@ -18,6 +18,8 @@ extern "C" {
 #include <mutex>
 #include <cstring>
 #include <cstdint>
+#include <thread> // [新增] 线程支持
+#include <atomic> // [新增] 原子操作
 
 using namespace godot;
 
@@ -40,7 +42,14 @@ public:
 private:
     static void _bind_methods();
 
-    bool streaming = false;
+    // --- 线程与状态控制 ---
+    std::atomic<bool> streaming = false; // 线程安全的运行标志
+    std::thread connection_thread;       // 后台连接线程
+    
+    // 内部线程函数：执行阻塞的 LiStartConnection
+    void _connection_thread_func();
+
+    // --- 配置参数 ---
     String host_address;
     int app_id = 0;
     int width = 1920;
@@ -58,18 +67,18 @@ private:
     // === 来自 /launch (sessionUrl0) ===
     String server_rtsp_session_url;
 
+    // --- 渲染资源 ---
     SubViewport* viewport = nullptr;
     RID texture_rid;
 
-    // Frame queue (decoder thread → main thread)
+    // --- 帧队列 (解码线程 -> 主线程) ---
     PackedByteArray pending_frame;
     bool has_pending_frame = false;
     mutable std::mutex frame_mutex;
 
-    // User-provided encryption keys for the remote input stream.
-    // These are mandatory and must be set before calling `start_connection`.
-    godot::PackedByteArray custom_aes_key; // Must be exactly 16 bytes.
-    godot::PackedByteArray custom_aes_iv;  // Must be at least 4 bytes.
+    // --- 加密密钥 (必须由 GDScript 设置) ---
+    godot::PackedByteArray custom_aes_key; // 16 bytes
+    godot::PackedByteArray custom_aes_iv;  // >= 4 bytes
 
 public:
     MoonlightStream();
@@ -81,15 +90,8 @@ public:
     Ref<AudioStreamGenerator> audio_stream;
     Ref<AudioStreamGeneratorPlayback> audio_playback;
 
-    /// Sets the custom AES key for remote input encryption.
-    /// This is a required parameter for establishing a connection.
-    /// The key must be exactly 16 bytes long.
+    // Key Setters
     void set_remote_input_aes_key(const godot::PackedByteArray &p_key);
-
-    /// Sets the custom AES IV for remote input encryption.
-    /// This is a required parameter for establishing a connection.
-    /// Only the first 4 bytes are used as the key ID (`rikeyid`).
-    /// The array must be at least 4 bytes long.
     void set_remote_input_aes_iv(const godot::PackedByteArray &p_iv);
 
     // Properties
@@ -126,11 +128,11 @@ public:
     void set_enable_hdr(bool p_enable) { enable_hdr = p_enable; }
     bool get_enable_hdr() const { return enable_hdr; }
 
-    bool is_streaming() const { return streaming; }
+    bool is_streaming() const { return streaming.load(); }
     Ref<AudioStreamGenerator> get_audio_stream() const { return audio_stream; }
 
     // Control
-    bool start_connection();
+    void start_connection(); // 改为 void，通过信号返回结果
     void stop_connection();
 
     // Input
@@ -138,9 +140,13 @@ public:
     void send_mouse_move_event(float x, float y);
     void send_key_event(int scancode, bool pressed);
 
-    // Internal
+    // Internal (Callbacks)
     int _on_submit_decode_unit(PDECODE_UNIT decode_unit);
     void _process(double delta) override;
+    
+    // Helper to dispatch signals from static callbacks
+    void _emit_connection_started();
+    void _emit_connection_terminated(int error_code);
 };
 
 VARIANT_ENUM_CAST(MoonlightStream::Codec);

@@ -1,0 +1,74 @@
+[gd_scene load_steps=2 format=3 uid="uid://dh0oj81pufivs"]
+
+[ext_resource type="Script" uid="uid://bkwk40ybs8kgm" path="res://example.gd" id="1_jdh55"]
+
+[node name="Node" type="Node"]
+script = ExtResource("1_jdh55")
+
+[node name="Container" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="GridContainer" type="GridContainer" parent="."]
+offset_right = 40.0
+offset_bottom = 40.0
+columns = 10
+
+[node name="LineEdit" type="LineEdit" parent="GridContainer"]
+custom_minimum_size = Vector2(150, 0)
+layout_mode = 2
+text = "127.0.0.1"
+placeholder_text = "IP"
+
+[node name="LineEdit3" type="LineEdit" parent="GridContainer"]
+custom_minimum_size = Vector2(150, 0)
+layout_mode = 2
+placeholder_text = "pin"
+
+[node name="Button" type="Button" parent="GridContainer"]
+layout_mode = 2
+text = "pair"
+
+[node name="Button2" type="Button" parent="GridContainer"]
+layout_mode = 2
+text = "unpair"
+
+[node name="Button3" type="Button" parent="GridContainer"]
+layout_mode = 2
+text = "applist"
+
+[node name="LineEdit2" type="LineEdit" parent="GridContainer"]
+custom_minimum_size = Vector2(150, 0)
+layout_mode = 2
+placeholder_text = "appid"
+
+[node name="Button4" type="Button" parent="GridContainer"]
+layout_mode = 2
+text = "launch"
+
+[node name="Button5" type="Button" parent="GridContainer"]
+layout_mode = 2
+text = "resume"
+
+[node name="Button6" type="Button" parent="GridContainer"]
+layout_mode = 2
+text = "stop"
+
+[node name="Label" type="Label" parent="GridContainer"]
+layout_mode = 2
+
+[node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="."]
+
+[connection signal="text_changed" from="GridContainer/LineEdit" to="." method="ip_set"]
+[connection signal="text_changed" from="GridContainer/LineEdit3" to="." method="pin_set"]
+[connection signal="pressed" from="GridContainer/Button" to="." method="pair"]
+[connection signal="pressed" from="GridContainer/Button2" to="." method="unpair"]
+[connection signal="pressed" from="GridContainer/Button3" to="." method="applist"]
+[connection signal="text_changed" from="GridContainer/LineEdit2" to="." method="appid_set"]
+[connection signal="pressed" from="GridContainer/Button4" to="." method="launch"]
+[connection signal="pressed" from="GridContainer/Button5" to="." method="resume"]
+[connection signal="pressed" from="GridContainer/Button6" to="." method="stop"]

@@ -1,7 +1,11 @@
 #include "moonlight_stream.h"
 
-// Static map for context -> instance
+// Static map for context -> instance (用于音视频回调)
 std::map<void*, MoonlightStream*> MoonlightStream::instance_map;
+
+// Global pointer for connection listeners (因为 C 回调不带 context)
+// 注意：这意味着同一时间只能有一个活跃的连接实例，这符合 Moonlight 的典型用法
+static MoonlightStream* global_active_stream = nullptr;
 
 // Thread-local storage for current stream instance (per decoder thread)
 thread_local MoonlightStream* tls_current_stream = nullptr;
@@ -36,7 +40,8 @@ static int dr_setup(int video_format, int width, int height, int redraw_rate, vo
     auto it = MoonlightStream::instance_map.find(context);
     if (it != MoonlightStream::instance_map.end()) {
         tls_current_stream = it->second;
-        tls_current_stream->set_resolution(width, height);
+        // 使用 call_deferred 确保在主线程更新 UI 属性
+        tls_current_stream->call_deferred("set_resolution", width, height);
     } else {
         tls_current_stream = nullptr;
     }
@@ -61,9 +66,13 @@ static int ar_init(int audio_configuration, const POPUS_MULTISTREAM_CONFIGURATIO
         return -1;
     }
     MoonlightStream* self = it->second;
-    self->audio_stream.instantiate();
-    self->audio_stream->set_mix_rate(48000);
-    self->audio_playback = self->audio_stream->instantiate_playback();
+    
+    // 假设 audio_stream 已经在主线程初始化完毕 (在构造函数中)
+    if (self->audio_stream.is_valid()) {
+        // instantiate_playback 是线程安全的吗？通常建议在主线程做
+        // 这里为了简化直接调用，如果崩溃需移至 _connection_thread_func 前的主线程逻辑
+        self->audio_playback = self->audio_stream->instantiate_playback();
+    }
     return 0;
 }
 
@@ -113,8 +122,10 @@ void MoonlightStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_enable_hdr", "enable"), &MoonlightStream::set_enable_hdr);
     ClassDB::bind_method(D_METHOD("get_enable_hdr"), &MoonlightStream::get_enable_hdr);
     ClassDB::bind_method(D_METHOD("get_audio_stream"), &MoonlightStream::get_audio_stream);
+    
     ClassDB::bind_method(D_METHOD("start_connection"), &MoonlightStream::start_connection);
     ClassDB::bind_method(D_METHOD("stop_connection"), &MoonlightStream::stop_connection);
+    
     ClassDB::bind_method(D_METHOD("send_mouse_button_event", "button", "pressed"), &MoonlightStream::send_mouse_button_event);
     ClassDB::bind_method(D_METHOD("send_mouse_move_event", "x", "y"), &MoonlightStream::send_mouse_move_event);
     ClassDB::bind_method(D_METHOD("send_key_event", "scancode", "pressed"), &MoonlightStream::send_key_event);
@@ -138,12 +149,22 @@ void MoonlightStream::_bind_methods() {
     BIND_ENUM_CONSTANT(COLOR_SPACE_REC_601);
     BIND_ENUM_CONSTANT(COLOR_SPACE_REC_709);
     BIND_ENUM_CONSTANT(COLOR_SPACE_REC_2020);
+
+    // === 注册信号 ===
+    ADD_SIGNAL(MethodInfo("connection_started"));
+    ADD_SIGNAL(MethodInfo("connection_terminated", PropertyInfo(Variant::INT, "error_code")));
+    ADD_SIGNAL(MethodInfo("connection_failed", PropertyInfo(Variant::STRING, "message")));
 }
 
 // ============ Lifecycle ============
 MoonlightStream::MoonlightStream() {
     void* render_context = this;
     instance_map[render_context] = this;
+    
+    // 在主线程提前初始化 AudioStream，避免在回调线程中创建对象的风险
+    audio_stream.instantiate();
+    audio_stream->set_mix_rate(48000);
+
     viewport = memnew(SubViewport);
     viewport->set_name("VideoViewport");
     viewport->set_size(Size2i(width, height));
@@ -157,7 +178,14 @@ MoonlightStream::MoonlightStream() {
 
 MoonlightStream::~MoonlightStream() {
     instance_map.erase(this);
-    stop_connection();
+    
+    // 如果是当前全局流，清除指针
+    if (global_active_stream == this) {
+        global_active_stream = nullptr;
+    }
+
+    stop_connection(); // 确保线程 join
+    
     if (viewport) {
         viewport->queue_free();
         viewport = nullptr;
@@ -172,41 +200,52 @@ void MoonlightStream::set_resolution(int p_width, int p_height) {
     }
 }
 
-// ============ Connection ============
-bool MoonlightStream::start_connection() {
-    if (streaming) return false;
+// ============ Connection Control ============
 
-    // === 新增：强制验证用户提供的密钥 ===
+void MoonlightStream::start_connection() {
+    // 检查是否已在运行
+    if (streaming.load()) {
+        UtilityFunctions::push_warning("MoonlightStream: Already streaming.");
+        return;
+    }
+    
+    // 如果之前的线程还没彻底退出，等待它
+    if (connection_thread.joinable()) {
+        connection_thread.join();
+    }
+
+    // === 参数校验 ===
     if (custom_aes_key.is_empty() || custom_aes_key.size() != 16) {
-        UtilityFunctions::push_error("MoonlightStream: Custom AES key is missing or invalid. It must be exactly 16 bytes.");
-        return false;
+        emit_signal("connection_failed", "Invalid AES Key (must be 16 bytes)");
+        return;
     }
-
     if (custom_aes_iv.is_empty() || custom_aes_iv.size() < 4) {
-        UtilityFunctions::push_error("MoonlightStream: Custom AES IV is missing or invalid. It must be at least 4 bytes long.");
-        return false;
+        emit_signal("connection_failed", "Invalid AES IV (must be >= 4 bytes)");
+        return;
     }
-    // === 验证结束 ===
-
     if (server_app_version.is_empty()) {
-        UtilityFunctions::push_error("server_app_version must be set! (from /serverinfo)");
-        return false;
+        emit_signal("connection_failed", "Server App Version not set");
+        return;
     }
 
-    if (server_codec_mode_support == 0) {
-        UtilityFunctions::push_error("server_codec_mode_support must be set (non-zero)! (from /serverinfo)");
-        return false;
-    }
+    // 设置全局活跃流指针 (供 C 回调使用)
+    global_active_stream = this;
+    streaming.store(true);
 
+    // 启动后台线程
+    connection_thread = std::thread(&MoonlightStream::_connection_thread_func, this);
+}
+
+void MoonlightStream::_connection_thread_func() {
+    // 在线程栈上准备数据，保证 LiStartConnection 执行期间数据有效
     CharString host_str = host_address.utf8();
-    CharString app_version_str = server_app_version.utf8();
+    CharString app_ver_str = server_app_version.utf8();
     CharString rtsp_url_str = server_rtsp_session_url.utf8();
 
     SERVER_INFORMATION server_info = {};
     server_info.address = host_str.get_data();
-    server_info.serverInfoAppVersion = app_version_str.get_data();
+    server_info.serverInfoAppVersion = app_ver_str.get_data();
     server_info.serverCodecModeSupport = server_codec_mode_support;
-
     if (!server_rtsp_session_url.is_empty()) {
         server_info.rtspSessionUrl = rtsp_url_str.get_data();
     } else {
@@ -225,12 +264,12 @@ bool MoonlightStream::start_connection() {
     stream_config.colorSpace = static_cast<int>(color_space);
     stream_config.colorRange = enable_hdr ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
 
-    // === 新增：直接使用用户提供的密钥 ===
+    // 填充 AES 密钥
     memcpy(stream_config.remoteInputAesKey, custom_aes_key.ptr(), 16);
     memcpy(stream_config.remoteInputAesIv, custom_aes_iv.ptr(), 4);
-    memset(stream_config.remoteInputAesIv + 4, 0, 12); // Clear unused part of IV
-    // === 密钥设置完成 ===
+    memset(stream_config.remoteInputAesIv + 4, 0, 12);
 
+    // 准备回调
     DECODER_RENDERER_CALLBACKS dr_callbacks = {};
     dr_callbacks.setup = dr_setup;
     dr_callbacks.submitDecodeUnit = dr_submit_decode_unit;
@@ -243,13 +282,28 @@ bool MoonlightStream::start_connection() {
     ar_callbacks.capabilities = CAPABILITY_DIRECT_SUBMIT;
 
     CONNECTION_LISTENER_CALLBACKS cl_callbacks = {};
-    cl_callbacks.stageStarting = [](int stage) { UtilityFunctions::print("Stage starting: ", stage); };
-    cl_callbacks.stageComplete = [](int stage) { UtilityFunctions::print("Stage complete: ", stage); };
-    cl_callbacks.stageFailed = [](int stage, int error) { UtilityFunctions::push_warning(vformat("Stage %d failed: %d", stage, error)); };
-    cl_callbacks.connectionStarted = []() { UtilityFunctions::print("Connection started!"); };
-    cl_callbacks.connectionTerminated = [](int error) { UtilityFunctions::push_error(vformat("Connection terminated: %d", error)); };
+    // 由于 C 回调签名不带 context，我们使用 lambda 并访问全局静态指针
+    cl_callbacks.stageStarting = [](int stage) { 
+        UtilityFunctions::print("Moonlight Stage Starting: ", stage); 
+    };
+    cl_callbacks.stageFailed = [](int stage, int error) {
+        UtilityFunctions::push_warning(vformat("Moonlight Stage %d Failed: %d", stage, error));
+    };
+    cl_callbacks.connectionStarted = []() {
+        UtilityFunctions::print("Moonlight Connection Started!");
+        if (global_active_stream) {
+            global_active_stream->_emit_connection_started();
+        }
+    };
+    cl_callbacks.connectionTerminated = [](int error) {
+        UtilityFunctions::print("Moonlight Connection Terminated: ", error);
+        // 此时 LiStartConnection 可能还没返回，我们在线程结束处统一发信号
+    };
+    // Log 也可以加，看需求
 
-    void* render_context = this;
+    void* render_context = this; // 传给 video/audio callback 的 context
+    
+    // === 阻塞调用 ===
     int ret = LiStartConnection(
         &server_info,
         &stream_config,
@@ -258,29 +312,51 @@ bool MoonlightStream::start_connection() {
         &ar_callbacks,
         render_context,
         0,
-        render_context,
+        render_context, // Audio context
         0
     );
 
-    streaming = (ret == 0);
-    if (!streaming) {
-        UtilityFunctions::push_error(vformat("LiStartConnection failed: %d", ret));
+    // 连接结束
+    streaming.store(false);
+    if (global_active_stream == this) {
+        global_active_stream = nullptr;
     }
-    return streaming;
+
+    // 通知主线程连接已结束
+    call_deferred("_emit_connection_terminated", ret);
 }
 
 void MoonlightStream::stop_connection() {
-    if (streaming) {
+    // 1. 发出停止指令，打破阻塞
+    if (streaming.load()) {
         LiStopConnection();
-        streaming = false;
-        audio_playback.unref();
-        audio_stream.unref();
+    }
+
+    // 2. 等待线程完全退出
+    if (connection_thread.joinable()) {
+        connection_thread.join();
+    }
+    
+    // 3. 状态清理
+    streaming.store(false);
+    if (global_active_stream == this) {
+        global_active_stream = nullptr;
     }
 }
 
-// ============ Frame Rendering (Called from Decoder Thread) ============
+// ============ Signal Helpers (run on Main Thread via call_deferred) ============
+void MoonlightStream::_emit_connection_started() {
+    // 再次通过 call_deferred 确保万无一失（虽然从 lambda 调过来已经是 deferred）
+    call_deferred("emit_signal", "connection_started");
+}
+
+void MoonlightStream::_emit_connection_terminated(int error_code) {
+    call_deferred("emit_signal", "connection_terminated", error_code);
+}
+
+// ============ Frame Rendering ============
 int MoonlightStream::_on_submit_decode_unit(PDECODE_UNIT decode_unit) {
-    if (!streaming || width <= 0 || height <= 0 || (width & 1) || (height & 1)) {
+    if (!streaming.load() || width <= 0 || height <= 0 || (width & 1) || (height & 1)) {
         return DR_OK;
     }
 
@@ -324,34 +400,38 @@ int MoonlightStream::_on_submit_decode_unit(PDECODE_UNIT decode_unit) {
     return DR_OK;
 }
 
-// ============ Main Thread Texture Update ============
+// ============ Main Thread Process ============
 void MoonlightStream::_process(double delta) {
     PackedByteArray frame;
+    bool update = false;
     {
         std::lock_guard<std::mutex> lock(frame_mutex);
-        if (!has_pending_frame) return;
-        frame = pending_frame;
-        has_pending_frame = false;
+        if (has_pending_frame) {
+            frame = pending_frame;
+            has_pending_frame = false;
+            update = true;
+        }
     }
 
-    Ref<Image> image = Image::create_from_data(width, height, false, Image::FORMAT_RGBA8, frame);
-    RenderingServer::get_singleton()->texture_2d_update(texture_rid, image, 0);
+    if (update) {
+        Ref<Image> image = Image::create_from_data(width, height, false, Image::FORMAT_RGBA8, frame);
+        RenderingServer::get_singleton()->texture_2d_update(texture_rid, image, 0);
+    }
 }
 
 // ============ Input ============
 void MoonlightStream::send_mouse_button_event(int button, bool pressed) {
-    if (streaming) LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, button);
+    if (streaming.load()) LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, button);
 }
 
 void MoonlightStream::send_mouse_move_event(float x, float y) {
-    if (streaming) LiSendMouseMoveEvent(static_cast<short>(x), static_cast<short>(y));
+    if (streaming.load()) LiSendMouseMoveEvent(static_cast<short>(x), static_cast<short>(y));
 }
 
 void MoonlightStream::send_key_event(int scancode, bool pressed) {
-    if (streaming) LiSendKeyboardEvent(static_cast<short>(scancode), pressed ? KEY_ACTION_DOWN : KEY_ACTION_UP, 0);
+    if (streaming.load()) LiSendKeyboardEvent(static_cast<short>(scancode), pressed ? KEY_ACTION_DOWN : KEY_ACTION_UP, 0);
 }
 
-// Setter implementations
 void MoonlightStream::set_remote_input_aes_key(const PackedByteArray &p_key) {
     custom_aes_key = p_key;
 }

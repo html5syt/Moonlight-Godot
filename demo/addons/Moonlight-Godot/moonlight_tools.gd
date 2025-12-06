@@ -1,138 +1,102 @@
 class_name MoonlightTools
 extends Node
 
-# --- 路径常量 ---
-const CLIENT_CERT_PATH = "user://client.crt"
-const CLIENT_KEY_PATH = "user://client.key"
-const SERVER_CERT_PATH = "user://server.crt"
+# 路径配置
+const CERT_DIR = "user://certs"
+const CLIENT_CERT_PATH = CERT_DIR + "/client.crt"
+const CLIENT_KEY_PATH = CERT_DIR + "/client.key"
+const SERVER_CERT_PATH = CERT_DIR + "/server.pem"
 
-# --- 运行配置 ---
-var server_ip: String = "127.0.0.1"
+var server_ip: String = ""
 var http_port: int = 47989
 var https_port: int = 47984
-var unique_id: String = ""
-
-# --- 内部实例 ---
-var _crypto: Crypto = Crypto.new()
+var unique_id: String = "0123456789ABCDEF" # 固定 ID
 
 func _ready():
-    if unique_id.is_empty():
-        unique_id = _get_or_create_uuid()
-    _ensure_client_certs()
+    if not DirAccess.dir_exists_absolute(CERT_DIR):
+        DirAccess.make_dir_absolute(CERT_DIR)
+    _ensure_identity()
 
-# --- 证书管理 ---
-
-func _ensure_client_certs():
+# --- 身份管理 (IdentityManager.cpp) ---
+func _ensure_identity():
     if FileAccess.file_exists(CLIENT_CERT_PATH) and FileAccess.file_exists(CLIENT_KEY_PATH):
         return
-
-    print("MoonlightTools: 生成客户端 RSA 密钥与证书...")
-    var key = _crypto.generate_rsa(2048)
-    var cert = _crypto.generate_self_signed_certificate(
-        key, 
-        "CN=NVIDIA GameStream Client,O=GodotMoonlight,C=US", 
-        "20200101000000", 
-		"20400101000000"
-    )
+    
+    print("Generating new client identity...")
+    var crypto = Crypto.new()
+    var key = crypto.generate_rsa(2048)
+    var cert = crypto.generate_self_signed_certificate(key, "CN=NVIDIA GameStream Client", "20200101000000", "20400101000000")
     key.save(CLIENT_KEY_PATH)
     cert.save(CLIENT_CERT_PATH)
 
-func get_client_cert_string() -> String:
-    if not FileAccess.file_exists(CLIENT_CERT_PATH): return ""
+func get_client_cert_hex() -> String:
     var f = FileAccess.open(CLIENT_CERT_PATH, FileAccess.READ)
-    var text = f.get_as_text()
-    text = text.replace("-----BEGIN CERTIFICATE-----", "")
-    text = text.replace("-----END CERTIFICATE-----", "")
-    text = text.replace("\n", "").replace("\r", "")
-    return text
+    return f.get_as_text().to_utf8_buffer().hex_encode()
 
-# --- 网络请求 ---
+func save_server_cert(hex_data: String):
+    var bytes = hex_data.hex_decode() # Qt 源码中 serverCertStr 是 hex decode 后的 PEM
+    var f = FileAccess.open(SERVER_CERT_PATH, FileAccess.WRITE)
+    f.store_buffer(bytes)
 
-## 获取 TLS 配置 (核心修改)
-## verify_server: 是否需要验证服务器证书 (Pinned Certificate)
-## use_client_auth: 是否需要发送客户端证书 (mTLS)
-func get_tls_options(verify_server: bool = true, use_client_auth: bool = true) -> TLSOptions:
-    var trusted_cas = X509Certificate.new()
-    var has_server_cert = false
-    
-    # 1. 加载服务器证书 (用于验证对方)
-    if verify_server and FileAccess.file_exists(SERVER_CERT_PATH):
-        if trusted_cas.load(SERVER_CERT_PATH) == OK:
-            has_server_cert = true
+# --- TLS 配置 (参考 nvhttp.cpp setSslConfiguration) ---
+# 模式 1: Pinning (验证服务器证书) - 用于 /serverinfo 和 HTTPS 握手
+func get_tls_pinning() -> TLSOptions:
+    if FileAccess.file_exists(SERVER_CERT_PATH):
+        var cert = X509Certificate.new()
+        if cert.load(SERVER_CERT_PATH) == OK:
+            return TLSOptions.client_unsafe(cert) # 校验 CA 但忽略 Hostname (IP 访问常见问题)
+    return TLSOptions.client_unsafe()
 
-    # 2. 加载客户端证书 (用于表明自己身份)
-    var client_cert = X509Certificate.new()
-    var client_key = CryptoKey.new()
-    var has_client_identity = false
-    
-    if use_client_auth and FileAccess.file_exists(CLIENT_CERT_PATH) and FileAccess.file_exists(CLIENT_KEY_PATH):
-        if client_cert.load(CLIENT_CERT_PATH) == OK and client_key.load(CLIENT_KEY_PATH) == OK:
-            has_client_identity = true
+# 模式 2: mTLS (携带客户端证书) - 用于 /launch, /pair (stage 5)
+func get_tls_mtls() -> TLSOptions:
+    var key = CryptoKey.new()
+    var cert = X509Certificate.new()
+    if key.load(CLIENT_KEY_PATH) == OK and cert.load(CLIENT_CERT_PATH) == OK:
+        # 注意：Godot 的 client() 目前不支持直接传 client cert。
+        # 这里的 trick 是使用 server() 配置，它允许指定 key/cert。
+        # 虽然命名是 server，但底层 SSL context 只要配了 key/cert，在握手请求 client cert 时就会发送。
+        return TLSOptions.server(key, cert)
+    return null
 
-    # --- 配置生成逻辑 ---
-    
-    # 如果需要携带客户端证书进行请求 (mTLS)
-    # 根据指示：使用 .server() 配置来携带客户端证书
-    if has_client_identity:
-        # 注意：TLSOptions.server(key, cert) 创建包含私钥和证书的配置
-        # 在发起请求时使用此配置，即可在握手阶段发送客户端证书
-        return TLSOptions.server(client_key, client_cert)
-    
-    # 如果不需要客户端证书，仅验证服务器 (单向验证)
-    if verify_server and has_server_cert:
-        return TLSOptions.client(trusted_cas)
-    
-    # 既无客户端证书，也不强制验证服务器 (不安全/初始配对阶段)
-    return TLSOptions.client_unsafe(trusted_cas if has_server_cert else null)
-
-## 发送 HTTP 请求
-## use_client_auth: 控制是否尝试使用 mTLS
-func send_request(parent: Node, path: String, use_https: bool = false, use_client_auth: bool = true) -> Dictionary:
+# --- HTTP 请求 ---
+# tls_mode: 0=HTTP, 1=HTTPS(Pinning), 2=HTTPS(mTLS)
+func request(parent: Node, path: String, tls_mode: int = 0) -> Dictionary:
     var req = HTTPRequest.new()
     parent.add_child(req)
+    req.timeout = 5.0 # FAST_FAIL_TIMEOUT_MS
     
-    var port = https_port if use_https else http_port
-    var protocol = "https" if use_https else "http"
-    var url = "%s://%s:%d%s" % [protocol, server_ip, port, path]
+    var port = https_port if tls_mode > 0 else http_port
+    var proto = "https" if tls_mode > 0 else "http"
+    var url = "%s://%s:%d%s" % [proto, server_ip, port, path]
     
-    if use_https:
-        # 传递 use_client_auth 参数
-        req.set_tls_options(get_tls_options(true, use_client_auth))
+    if tls_mode == 1:
+        req.set_tls_options(get_tls_pinning())
+    elif tls_mode == 2:
+        var mtls = get_tls_mtls()
+        if mtls: req.set_tls_options(mtls)
     
     req.request(url)
-    var result = await req.request_completed
+    var res = await req.request_completed
     req.queue_free()
     
-    if result[0] != HTTPRequest.RESULT_SUCCESS:
+    # [Result, Code, Headers, Body]
+    if res[0] != HTTPRequest.RESULT_SUCCESS:
         return {"success": false, "code": 0, "body": ""}
-        
+    
     return {
-        "success": true, 
-        "code": result[1], 
-        "body": result[3].get_string_from_utf8(),
-        "raw_body": result[3]
+        "success": true,
+        "code": res[1],
+        "body": res[3].get_string_from_utf8()
     }
 
-# --- 数据处理辅助 ---
-
-func _get_or_create_uuid() -> String:
-    var rng = RandomNumberGenerator.new()
-    rng.randomize()
-    var uuid = ""
-    var chars = "0123456789abcdef"
-    for i in range(16):
-        uuid += chars[rng.randi() % 16]
-    return uuid
-
-func parse_xml(xml_str: String) -> Dictionary:
-    var parser = XMLParser.new()
-    parser.open_buffer(xml_str.to_utf8_buffer())
-    var dict = {}
-    var current_tag = ""
-    while parser.read() != ERR_FILE_EOF:
-        if parser.get_node_type() == XMLParser.NODE_ELEMENT:
-            current_tag = parser.get_node_name()
-        elif parser.get_node_type() == XMLParser.NODE_TEXT:
-            if current_tag != "":
-                dict[current_tag] = parser.get_node_data()
-    return dict
+func parse_xml(xml: String) -> Dictionary:
+    var p = XMLParser.new()
+    p.open_buffer(xml.to_utf8_buffer())
+    var d = {}
+    var tag = ""
+    while p.read() == OK:
+        if p.get_node_type() == XMLParser.NODE_ELEMENT:
+            tag = p.get_node_name()
+        elif p.get_node_type() == XMLParser.NODE_TEXT:
+            if tag != "": d[tag] = p.get_node_data()
+    return d

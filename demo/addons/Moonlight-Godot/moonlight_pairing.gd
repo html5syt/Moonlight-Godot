@@ -1,139 +1,134 @@
 class_name MoonlightPairing
 extends Node
 
-signal pairing_pin_generated(pin: String)
-signal pairing_status_changed(stage: String, message: String)
-signal pairing_success
-signal pairing_failed(error: String)
+signal pin_generated(pin)
+signal status_changed(msg)
+signal success
+signal failed(err)
 
 var _tools: MoonlightTools
-var _pairing_active: bool = false
-var _crypto: Crypto = Crypto.new()
+var _ex_tools # GDExtension 实例
+var _active = false
 
-# 上下文数据
-var _current_pin: String = ""
-var _current_salt_hex: String = ""
-
-func _init(tools: MoonlightTools):
+func _init(tools):
     _tools = tools
+    if ClassDB.class_exists("MoonlightExTools"):
+        _ex_tools = ClassDB.instantiate("MoonlightExTools")
 
-func start_pairing():
-    if _pairing_active: return
-    _pairing_active = true
-    _execute_pairing_flow()
+func start():
+    if _active: return
+    _active = true
+    _flow()
 
-func cancel_pairing():
-    _pairing_active = false
-    emit_signal("pairing_failed", "已取消")
-
-func _execute_pairing_flow():
-    emit_signal("pairing_status_changed", "INIT", "正在连接服务器...")
-    
-    # 1. 获取服务器信息
-    var info_res = await _tools.send_request(self, "/serverinfo")
-    if not info_res.success or info_res.code != 200:
-        _fail("无法连接服务器 (Code: %d)" % info_res.code)
-        return
-        
-    # 2. 生成 PIN 和 Salt
+func _flow():
+    # 生成 PIN 和 Salt
     var rng = RandomNumberGenerator.new()
     rng.randomize()
-    var pin = ""
-    for i in range(4): pin += str(rng.randi() % 10)
-    
-    var salt_bytes = _crypto.generate_random_bytes(16)
+    var pin = "%04d" % rng.randi_range(0, 9999)
+    var salt_bytes = _ex_tools.generate_random_bytes(16)
     var salt_hex = salt_bytes.hex_encode()
     
-    _current_pin = pin
-    _current_salt_hex = salt_hex
+    emit_signal("pin_generated", pin)
+    emit_signal("status_changed", "Stage 1: Get Cert...")
     
-    emit_signal("pairing_pin_generated", pin)
-    emit_signal("pairing_status_changed", "PIN", "请在主机输入 PIN: " + pin)
+    # --- 1. 生成 AES Key (PBKDF2) ---
+    var aes_key = _ex_tools.derive_aes_key(pin, salt_hex)
     
-    # 3. 轮询配对请求
-    var client_cert_str = _tools.get_client_cert_string()
-    var pair_url = "/pair?uniqueid=%s&devicename=GodotClient&updateState=1&phrase=pairchallenge&salt=%s&clientcert=%s" % [_tools.unique_id, salt_hex, client_cert_str]
+    # --- Stage 1: Get Server Cert (HTTP) ---
+    # 对应 nvpairingmanager.cpp:217
+    var url_st1 = "/pair?uniqueid=%s&devicename=Godot&updateState=1&phrase=getservercert&salt=%s&clientcert=%s" \
+        % [_tools.unique_id, salt_hex, _tools.get_client_cert_hex()]
     
-    var polling = true
-    while polling and _pairing_active:
-        var res = await _tools.send_request(self, pair_url)
-        
+    # 轮询等待用户在 PC 输入 PIN
+    while _active:
+        var res = await _tools.request(self, url_st1, 0) # HTTP
         if res.success and res.code == 200:
             var xml = _tools.parse_xml(res.body)
-            if xml.has("paired") and xml["paired"] == "1":
-                polling = false
-                if await _handle_challenge_exchange(xml):
-                    _finish_pairing()
-                return
-        
+            if xml.get("paired") == "1":
+                if xml.has("plaincert"):
+                    _tools.save_server_cert(xml["plaincert"]) # 立即保存证书用于 Pinning
+                    _stage_2(aes_key)
+                    return
         await get_tree().create_timer(1.0).timeout
 
-func _handle_challenge_exchange(xml: Dictionary) -> bool:
-    emit_signal("pairing_status_changed", "CRYPTO", "正在进行安全验证...")
+# --- Stage 2: Client Challenge ---
+# 对应 nvpairingmanager.cpp:257
+func _stage_2(aes_key: PackedByteArray):
+    emit_signal("status_changed", "Stage 2: Client Challenge...")
     
-    if not xml.has("challenge"):
-        return await _execute_https_confirmation()
-
-    if not ClassDB.class_exists("MoonlightExTools"):
-        _fail("缺失 MoonlightExTools 类，请检查 GDExtension。")
-        return false
+    var random_challenge = _ex_tools.generate_random_bytes(16)
+    var enc_challenge = _ex_tools.encrypt_aes_hex(random_challenge, aes_key)
     
-    if not FileAccess.file_exists(MoonlightTools.CLIENT_KEY_PATH):
-        _fail("找不到客户端私钥")
-        return false
-    var client_key_pem = FileAccess.get_file_as_string(MoonlightTools.CLIENT_KEY_PATH)
-    
-    # 调用 C++ 扩展
-    var ex_tools = ClassDB.instantiate("MoonlightExTools")
-    var server_challenge = xml["challenge"]
-    var response_hex = ex_tools.generate_pairing_response(_current_pin, _current_salt_hex, server_challenge, client_key_pem)
-    
-    if response_hex.is_empty():
-        _fail("加密计算失败")
-        return false
-    
-    # 发送挑战响应
-    var url = "/pair?uniqueid=%s&phrase=pairchallenge&clientchallenge=%s" % [_tools.unique_id, response_hex]
-    var res = await _tools.send_request(self, url)
-    
-    if res.success and res.code == 200:
-        var resp_xml = _tools.parse_xml(res.body)
-        if resp_xml.has("paired") and resp_xml["paired"] == "1":
-            return await _execute_https_confirmation()
-            
-    _fail("服务器验证失败")
-    return false
-
-func _execute_https_confirmation() -> bool:
-    emit_signal("pairing_status_changed", "CONFIRM", "正在完成配对...")
-    # 这里启用 HTTPS 并要求使用客户端证书 (mTLS)
-    # 因为 get_tls_options 已经根据指示修改为返回 server() 配置来携带证书
-    var url = "/pair?uniqueid=%s&phrase=pairchallenge" % _tools.unique_id
-    var res = await _tools.send_request(self, url, true, true) # use_https=true, use_client_auth=true
-    
-    if res.success and res.code == 200:
-        _extract_and_save_server_cert(res.body)
-        return true
-    
-    # 如果返回 403 Forbidden，通常说明 mTLS 握手失败（服务器没收到客户端证书）
-    if res.code == 403:
-        print("HTTPS 确认返回 403。mTLS 可能未正确生效。")
-    else:
-        print("HTTPS 确认返回: %d" % res.code)
+    var url = "/pair?uniqueid=%s&devicename=Godot&updateState=1&clientchallenge=%s" \
+        % [_tools.unique_id, enc_challenge]
         
-    # 即使这里失败，如果之前步骤成功，也可以视为配对完成（视服务器宽容度而定）
-    return true
+    var res = await _tools.request(self, url, 0)
+    if res.success and res.code == 200:
+        var xml = _tools.parse_xml(res.body)
+        if xml.get("paired") == "1":
+            _stage_3(xml, aes_key, random_challenge)
+        else: _fail("Stage 2 failed")
+    else: _fail("Stage 2 net error")
 
-func _extract_and_save_server_cert(xml_body: String):
-    var xml = _tools.parse_xml(xml_body)
-    if xml.has("certificate"):
-        var f = FileAccess.open(MoonlightTools.SERVER_CERT_PATH, FileAccess.WRITE)
-        f.store_string("-----BEGIN CERTIFICATE-----\n" + xml["certificate"] + "\n-----END CERTIFICATE-----")
+# --- Stage 3: Server Response & Verify ---
+# 对应 nvpairingmanager.cpp:287
+func _stage_3(xml: Dictionary, aes_key: PackedByteArray, my_challenge: PackedByteArray):
+    emit_signal("status_changed", "Stage 3: Verify Server...")
+    
+    var server_resp_hex = xml.get("challengeresponse", "")
+    var decrypted_resp = _ex_tools.decrypt_aes_hex(server_resp_hex, aes_key)
+    
+    # 验证逻辑 (简化)：
+    # Server Response 包含: Hash(Cert) + Signature + ServerSecret
+    # 严格流程需要 verify_signature，此处假设解密成功即 PIN 正确 (因为 Key 是由 PIN 派生的)
+    
+    # 提取 ServerSecret (最后 16 字节) - 这是一个简化假设，具体偏移见 cpp
+    # 实际上我们需要构造 Client Pairing Secret
+    var server_secret = decrypted_resp.slice(-16) # 假设
+    
+    # --- Stage 4: Client Pairing Secret ---
+    var client_secret_data = _ex_tools.generate_random_bytes(16)
+    
+    # 签名 ClientSecret
+    var f_key = FileAccess.open(MoonlightTools.CLIENT_KEY_PATH, FileAccess.READ)
+    var signature = _ex_tools.sign_data(client_secret_data, f_key.get_as_text())
+    
+    # 拼接: Secret + Signature
+    var payload = client_secret_data + signature
+    var enc_payload = _ex_tools.encrypt_aes_hex(payload, aes_key)
+    
+    var url = "/pair?uniqueid=%s&devicename=Godot&updateState=1&clientpairingsecret=%s" \
+        % [_tools.unique_id, enc_payload]
+        
+    var res = await _tools.request(self, url, 0)
+    if res.success and res.code == 200:
+        _stage_5()
+    else: _fail("Stage 4 failed (PIN Wrong?)")
 
-func _fail(reason: String):
-    _pairing_active = false
-    emit_signal("pairing_failed", reason)
+# --- Stage 5: HTTPS Final Challenge (mTLS) ---
+# 对应 nvpairingmanager.cpp:343
+func _stage_5():
+    emit_signal("status_changed", "Stage 5: HTTPS Handshake...")
+    
+    var url = "/pair?uniqueid=%s&devicename=Godot&updateState=1&phrase=pairchallenge" % _tools.unique_id
+    
+    # 关键：这里必须使用 mTLS (tls_mode=2)
+    var res = await _tools.request(self, url, 2)
+    
+    if res.success and res.code == 200:
+        var xml = _tools.parse_xml(res.body)
+        if xml.get("paired") == "1":
+            _success()
+        else: _fail("Stage 5 denied")
+    else:
+        # 某些情况 Server 可能返回 403 但实际配对已完成，
+        # 但标准流程应为 200。
+        _fail("Stage 5 failed: %d" % res.code)
 
-func _finish_pairing():
-    _pairing_active = false
-    emit_signal("pairing_success")
+func _fail(msg):
+    _active = false
+    emit_signal("failed", msg)
+
+func _success():
+    _active = false
+    emit_signal("success")

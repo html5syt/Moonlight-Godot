@@ -1,0 +1,1679 @@
+类：   TLSOptions
+继承：   RefCounted <   Object
+
+客户端与服务器的 TLS 配置。
+
+描述
+
+TLSOptions 是对 StreamPeerTLS 和 PacketPeerDTLS 类中配置选项的抽象。
+
+无法直接实例化这个类的对象，应改用静态方法 client()、client_unsafe() 或 server()。
+
+# 创建 TLS 客户端配置，使用自定义 CA 信任链。
+var client_trusted_cas = load("res://my_trusted_cas.crt")
+var client_tls_options = TLSOptions.client(client_trusted_cas)
+
+# 创建 TLS 服务器配置。
+var server_certs = load("res://my_server_cas.crt")
+var server_key = load("res://my_server_key.key")
+var server_tls_options = TLSOptions.server(server_key, server_certs) 
+
+方法
+
+TLSOptionsclient(trusted_chain: X509Certificate = null, common_name_override: String = "") staticTLSOptionsclient_unsafe(trusted_chain: X509Certificate = null) staticStringget_common_name_override() constX509Certificateget_own_certificate() constCryptoKeyget_private_key() constX509Certificateget_trusted_ca_chain() constboolis_server() constboolis_unsafe_client() constTLSOptionsserver(key: CryptoKey, certificate: X509Certificate) static
+
+
+方法说明
+
+
+● TLSOptions client(trusted_chain: X509Certificate = null, common_name_override: String = "") static
+
+创建 TLS 客户端配置，验证证书及其通用名称（完整域名）。
+
+你可以指定自定义的证书颁发机构信任链 trusted_chain（如果为 null 则使用默认 CA 列表）。如果你希望证书拥有服务器 FQDN 之外的通用名称，还可以提供通用名称覆盖 common_name_override。
+
+注意：在 Web 平台上，TLS 验证始终强制使用 Web 浏览器的 CA 列表。这是一种安全特性。
+
+
+● TLSOptions client_unsafe(trusted_chain: X509Certificate = null) static
+
+创建不安全的 TLS 客户端配置，证书验证为可选项。你可以选择提供有效的信任链 trusted_chain，但永远不会对证书的通用名称进行检查。这种配置不推荐用于测试之外的用途。
+
+注意：在 Web 平台上，TLS 验证始终强制使用 Web 浏览器的 CA 列表。这是一种安全特性。
+
+
+● String get_common_name_override() const
+
+返回使用 TLSOptions.client() 创建时指定的通用名（域名）覆盖项。
+
+
+● X509Certificate get_own_certificate() const
+
+返回使用 TLSOptions.server() 创建时指定的 X509Certificate。
+
+
+● CryptoKey get_private_key() const
+
+返回使用 TLSOptions.server() 创建时指定的 CryptoKey。
+
+
+● X509Certificate get_trusted_ca_chain() const
+
+返回使用 TLSOptions.client() 或 TLSOptions.client_unsafe() 创建时使用的 CA X509Certificate 链。
+
+
+● bool is_server() const
+
+如果是通过 TLSOptions.server() 创建的则返回 true，否则返回 false。
+
+
+● bool is_unsafe_client() const
+
+如果是通过 TLSOptions.client_unsafe() 创建的则返回 true，否则返回 false。
+
+
+● TLSOptions server(key: CryptoKey, certificate: X509Certificate) static
+
+使用提供的密钥 key 和证书 certificate 创建 TLS 服务器配置。
+
+注意：certificate 中应当包含签名 CA 的完整证书链（可以使用通用文本编辑器连接证书文件）。
+
+类：   X509Certificate
+继承：   Resource <   RefCounted <   Object
+
+X509 证书（例如用于 TLS）。
+
+描述
+
+X509Certificate 类代表 X509 证书。证书可以像其他的 Resource 资源一样加载和保存。
+
+可以用作 StreamPeerTLS.accept_stream() 中的服务器证书（搭配正确的 CryptoKey），也可以用于指定通过 StreamPeerTLS.connect_to_stream() 连接到 TLS 服务器时应该接受的唯一证书。
+
+在线教程
+
+● SSL 证书
+
+方法
+
+Errorload(path: String)Errorload_from_string(string: String)Errorsave(path: String)Stringsave_to_string()
+
+
+方法说明
+
+
+● Error load(path: String)
+
+从路径 path 加载证书（“*.crt”文件）。
+
+
+● Error load_from_string(string: String)
+
+从给定的字符串 string 加载证书。
+
+
+● Error save(path: String)
+
+将证书保存到给定的路径 path（应该是“*.crt”文件）。
+
+
+● String save_to_string()
+
+返回证书的字符串表示，如果证书无效则返回空字符串。
+
+类：   HTTPClient
+继承：   RefCounted <   Object
+
+低级别的超文本传输协议客户端。
+
+描述
+
+超文本传输协议客户端（有时称为“用户代理”）。用于发出 HTTP 请求以下载网络内容，上传文件和其他数据或与各种服务通信，以及其他用例。
+
+请参阅 HTTPRequest 节点以获取更高级别的替代方案。
+
+注意：这个客户端只需要连接一个主机一次（见connect_to_host()），就可以发送多个请求。因此，使用 URL 的方法通常只使用主机后面的部分而不是完整的 URL，因为客户端已经连接到主机。请参阅 request() 以获取完整示例并开始使用。
+
+HTTPClient 应该在多个请求之间重用或连接到不同的主机，而不是为每个请求创建一个客户端。支持传输层安全 (TLS)，包括服务器证书验证。2xx 范围内的 HTTP 状态代码表示成功，3xx 表示重定向（即“再试一次，但在这里”），4xx 表示请求有问题，5xx 表示服务器端出了问题。
+
+有关 HTTP 的更多信息，请参阅 MDN 上 HTTP 的文档  （或阅读 RFC 2616  ，直接从根源了解）。
+
+注意：导出到 Android 时，在导出项目或使用一键部署前，请确保在 Android 导出预设中启用 INTERNET 权限。否则，任何类型的网络通信都将被 Android 阻止。
+
+注意：建议使用传输加密（TLS）并避免在 HTTP GET URL 参数中发送敏感信息（例如登录凭据）。考虑改用 HTTP POST 请求或 HTTP 标头来获取此类信息。
+
+注意：当从导出到 Web 的项目执行 HTTP 请求时，请记住，由于 CORS  ，远程服务器可能不允许来自站外的请求。如果托管到有问题的服务器，应该修改其后台，以通过添加 Access-Control-Allow-Origin: * HTTP 标头来允许来自站外的请求。
+
+注意：TLS 支持目前仅限于 TLSv1.2 和 TLSv1.3。尝试连接到仅支持较早（不安全）TLS 版本服务器时将返回一个错误。
+
+警告：目前不支持 TLS 证书撤销和证书绑定。只要吊销的证书在其他方面有效，就会被接受。如果这是一个问题，你可能希望使用有效期较短的自动管理的证书。
+
+在线教程
+
+● HTTP 客户端类
+● TLS 证书
+
+属性
+
+boolblocking_mode_enabled[默认： false]StreamPeerconnectionintread_chunk_size[默认： 65536]
+
+方法
+
+voidclose()Errorconnect_to_host(host: String, port: int = -1, tls_options: TLSOptions = null)intget_response_body_length() constintget_response_code() constPackedStringArrayget_response_headers()Dictionaryget_response_headers_as_dictionary()Statusget_status() constboolhas_response() constboolis_response_chunked() constErrorpoll()Stringquery_string_from_dict(fields: Dictionary)PackedByteArrayread_response_body_chunk()Errorrequest(method: Method, url: String, headers: PackedStringArray, body: String = "")Errorrequest_raw(method: Method, url: String, headers: PackedStringArray, body: PackedByteArray)voidset_http_proxy(host: String, port: int)voidset_https_proxy(host: String, port: int)
+
+枚举
+
+enum Method:
+
+● METHOD_GET = 0
+HTTP GET 方法。GET 方法用于请求指定资源的某种表示。使用 GET 的请求应该只进行数据的获取。
+● METHOD_HEAD = 1
+HTTP HEAD 方法。HEAD 方法请求的是和 GET 请求一样的相应，但不包含响应体。用来请求元数据很方便，比如可以通过请求 HTTP 报头来判断资源是否存在。
+● METHOD_POST = 2
+HTTP POST 方法。POST 方法用于将实体提交给指定的资源，经常会造成服务器端状态的更改或者其他副作用。常用于提交表单和其他数据，或者上传文件。
+● METHOD_PUT = 3
+HTTP PUT 方法。PUT 方法的目的是使用请求负载替换目标资源的所有当前表示。（可以把 POST 理解为“创建或更新”，把 PUT 理解为“更小”，不过很多服务在这两者的含义之间并不作明显的区别）。
+● METHOD_DELETE = 4
+HTTP DELETE 方法。DELETE 方法请求删除指定的资源。
+● METHOD_OPTIONS = 5
+HTTP OPTIONS 方法。OPTIONS 方法的目的是获取目标资源的通讯选项。很少使用。
+● METHOD_TRACE = 6
+HTTP TRACE 方法。TRACE 方法会沿目标资源的路径做消息回环测试。返回的响应体中会包含完整的 HTTP 请求。很少使用。
+● METHOD_CONNECT = 7
+HTTP CONNECT 方法。CONNECT 方法会与目标资源所表示的服务器建立隧道。很少使用。
+● METHOD_PATCH = 8
+HTTP PATCH 方法。PATCH 方法用于对资源进行部分修改。
+● METHOD_MAX = 9
+代表 Method 枚举的大小。
+
+enum Status:
+
+● STATUS_DISCONNECTED = 0
+状态：与服务器断开连接。
+● STATUS_RESOLVING = 1
+状态：正在根据 URL 的主机名解析 IP。
+● STATUS_CANT_RESOLVE = 2
+状态：DNS 失败：无法解析指定 URL 的主机名。
+● STATUS_CONNECTING = 3
+状态：正在连接到服务器。
+● STATUS_CANT_CONNECT = 4
+状态：无法连接到服务器。
+● STATUS_CONNECTED = 5
+状态：连接已建立。
+● STATUS_REQUESTING = 6
+状态：正在发送请求。
+● STATUS_BODY = 7
+状态：已获取 HTTP 响应体。
+● STATUS_CONNECTION_ERROR = 8
+状态：HTTP 连接出错。
+● STATUS_TLS_HANDSHAKE_ERROR = 9
+状态：TLS 握手出错。
+
+enum ResponseCode:
+
+● RESPONSE_CONTINUE = 100
+HTTP 状态码 100 Continue。是表示目前为止一切正常的中间响应，客户端应该继续请求（如果已经请求完就可以直接忽略这个状态）。
+● RESPONSE_SWITCHING_PROTOCOLS = 101
+HTTP 状态码 101 Switching Protocol。针对客户 Upgrade 请求的响应，表示服务器所转换到的协议。
+● RESPONSE_PROCESSING = 102
+HTTP 状态码 102 Processing（WebDAV）。表示服务器已收到请求并且正在处理，尚未生成响应。
+
+● RESPONSE_OK = 200
+HTTP 状态码 200 OK。请求成功，是成功请求的默认响应，根据请求的不同表示的含义也不同：
+
+- METHOD_GET：已获取资源并通过消息体发送。
+
+- METHOD_HEAD：实体报头在消息体中。
+
+- METHOD_POST：描述操作结果的资源已通过消息体发送。
+
+- METHOD_TRACE：消息体包含服务器所收到的请求消息。
+
+● RESPONSE_CREATED = 201
+HTTP 状态码 201 Created。请求成功，并且创建了新资源。通常是针对 PUT 请求的响应.
+● RESPONSE_ACCEPTED = 202
+HTTP 状态码 202 Accepted。请求已收到，但尚未处理。HTTP 协议中无法实现在完成对请求的处理后异步地把请求发回来。这个响应的使用场景应该是会有其他进程或者服务器去处理这个请求，或者会进行批量处理。
+● RESPONSE_NON_AUTHORITATIVE_INFORMATION = 203
+HTTP 状态码 203 Non-Authoritative Information。该响应状态码表示返回的元消息与原始服务器所返回的不一致，而是从本地或者第三方副本中收集而来。除了特殊情况，应该优先选用 200 OK 响应所返回的内容。
+● RESPONSE_NO_CONTENT = 204
+HTTP 状态码 204 No Content。本请求无响应内容，但报头可能有用。用户代理可能会根据该资源更新缓存报头。
+● RESPONSE_RESET_CONTENT = 205
+HTTP 状态码 205 Reset Content。服务器已完成对请求的处理，并要求客户端将导致该请求的“文档视图”重置回原始状态。
+● RESPONSE_PARTIAL_CONTENT = 206
+HTTP 状态码 206 Partial Content。客户端如果发送范围（Range）报头就会收到该响应码，用于将下载拆分成多个数据流。
+● RESPONSE_MULTI_STATUS = 207
+HTTP 状态码 207 Multi-Status（WebDAV）。关于多个资源的多状态响应，适用于需要返回多个状态码的情况。
+● RESPONSE_ALREADY_REPORTED = 208
+HTTP 状态码 208 Already Reported（WebDAV）。在 DAV: propstat 相应元素内部使用，可以防止重复遍历同一合集中不同绑定的内部成员。
+● RESPONSE_IM_USED = 226
+HTTP 状态码 226 IM Used（WebDAV）。服务器完成了对该资源的 GET 请求，所响应的资源表示，是针对当前实例进行若干共同修改的结果。
+● RESPONSE_MULTIPLE_CHOICES = 300
+HTTP 状态码 300 Multiple Choice。请求有多个可能的响应，并且没有从中挑选其一的标准方法。用户代理或者用户应该自行挑选。
+● RESPONSE_MOVED_PERMANENTLY = 301
+HTTP 状态码 301 Moved Permanently。重定向。该响应码表示所请求资源的 URI 已改变。新的 URI 通常包含在响应中。
+● RESPONSE_FOUND = 302
+HTTP 状态码 302 Found。临时重定向。该响应码表示所请求资源的 URI 已临时改变。该 URI 将来还可能发生变，因此后续的请求应该仍然使用相同的 URI。
+● RESPONSE_SEE_OTHER = 303
+HTTP 状态码 303 See Other。服务器将用户代理重定向到另一个资源，资源由 Location 报头中的 URI 指定。用于提供针对原始请求的间接响应。
+● RESPONSE_NOT_MODIFIED = 304
+HTTP 状态码 304 Not Modified。收到了条件 GET 或者 HEAD，并且要不是因为该条件为 false 就会返回 200 OK 响应。
+● RESPONSE_USE_PROXY = 305
+  已弃用： 出于安全原因，许多客户端会忽略该响应代码。HTTP 标准也已弃用它。
+HTTP 状态码 305 Use Proxy。
+● RESPONSE_SWITCH_PROXY = 306
+  已弃用： 出于安全原因，许多客户端会忽略该响应代码。HTTP 标准也已弃用它。
+HTTP 状态码 306 Switch Proxy。
+● RESPONSE_TEMPORARY_REDIRECT = 307
+HTTP 状态码 307 Temporary Redirect。目标资源暂时位于不同的 URI，用户代理如果要自动重定向到该 URI，就一定不能更改所使用的请求方法。
+● RESPONSE_PERMANENT_REDIRECT = 308
+HTTP 状态码 308 Permanent Redirect。目标资源已被赋予全新的永久 URI，后续针对该资源的请求应当使用所提供的 URI。
+● RESPONSE_BAD_REQUEST = 400
+HTTP 状态码 400 Bad Request。请求无效。服务器认为客户端出错，所以无法或者拒绝处理该请求（例如：请求语法错误、请求消息帧无效、请求内容无效、请求路由可疑）。
+● RESPONSE_UNAUTHORIZED = 401
+HTTP 状态码 401 Unauthorized。需要提供认证信息。未执行请求，原因是缺少针对目标资源的授权认证信息。
+● RESPONSE_PAYMENT_REQUIRED = 402
+HTTP 状态码 402 Payment Required。该响应码是为将来使用保留的，本意是供数字支付系统使用，但目前尚未有所使用。
+● RESPONSE_FORBIDDEN = 403
+HTTP 状态码 403 Forbidden。客户端没有该内容的访问权限，即未授权，服务器拒绝给出正确响应。与 401 不同，服务器已收到客户端的身份信息。
+● RESPONSE_NOT_FOUND = 404
+HTTP 状态码 404 Not Found。服务器无法找到所请求的资源。可能是无法识别 URL，也可能是 URL 有效但资源本身不存在。也有可能在客户端未提供认证信息时代替 403 返回，从而达到隐藏资源存在性的目的。
+● RESPONSE_METHOD_NOT_ALLOWED = 405
+HTTP 状态码 405 Method Not Allowed。服务器理解请求所使用的 HTTP 方法，但该方法已被禁止使用。例如：API 可能禁止 DELETE 资源。GET 和 HEAD 这两个方法是必须的，所以不能被禁用，也不应该返回该错误码。
+● RESPONSE_NOT_ACCEPTABLE = 406
+HTTP 状态码 406 Not Acceptable。根据请求中主动注明的交涉报头字段，目标资源没有用户代理所能接受的表示。用于内容交涉过程。
+● RESPONSE_PROXY_AUTHENTICATION_REQUIRED = 407
+HTTP 状态码 407 Proxy Authentication Required。类似于 401 Unauthorized，表示客户端需要在提供认证信息后使用代理。
+● RESPONSE_REQUEST_TIMEOUT = 408
+HTTP 状态码 408 Request Timeout。服务器在其准备等待的时间段内未获取完整的请求信息。
+● RESPONSE_CONFLICT = 409
+HTTP 状态码 409 Conflict。请求无法完成，原因与是目标资源的当前状态存在冲突。该代码的使用场景应该是用户也许能够解决冲突并重新提交请求。
+● RESPONSE_GONE = 410
+HTTP 状态码 410 Gone。目标资源在原始服务器上已不复存在，并且可能永远如此。
+● RESPONSE_LENGTH_REQUIRED = 411
+HTTP 状态码 411 Length Required。服务器拒绝接受没有定义 Content-Length 报头的请求。
+● RESPONSE_PRECONDITION_FAILED = 412
+HTTP 状态码 412 Percondition Failed。请求报头中给出的若干条件在服务器上检查为 false。
+● RESPONSE_REQUEST_ENTITY_TOO_LARGE = 413
+HTTP 状态码 413 Entity Too Large。服务器拒绝处理请求，因为请求的负载超过了服务器所允许或者所能够处理的上限。
+● RESPONSE_REQUEST_URI_TOO_LONG = 414
+HTTP 状态码 414 Request-URI Too Long。服务器拒绝为请求提供服务，因为请求目标的长度超过了服务器所愿意解析的上限。
+● RESPONSE_UNSUPPORTED_MEDIA_TYPE = 415
+HTTP 状态码 415 Unsupported Media Type。原始服务器拒绝为请求提供服务，因为负载所使用的格式目标资源的该方法不支持。
+● RESPONSE_REQUESTED_RANGE_NOT_SATISFIABLE = 416
+HTTP 状态码 416 Requested Range Not Satisfiable。请求的 Range 报头中指定的所有范围都与所选资源的有效范围不重合，或者拒绝处理该范围的集合。拒绝的可能原因是存在无效的范围，或者存在过多细小或者重叠的范围。
+● RESPONSE_EXPECTATION_FAILED = 417
+HTTP 状态码 417 Expectation Failed。请求的 Expect 报头中给出的预期无法被任何内部服务器满足。
+● RESPONSE_IM_A_TEAPOT = 418
+HTTP 状态码 418 I'm A Teapot。想要尝试用茶壶煮咖啡就会得到错误码“418 因为我是个茶壶”，得到的实体大概又矮又胖。这个错误是对1998年愚人节玩笑的超文本咖啡壶控制协议的引用。
+● RESPONSE_MISDIRECTED_REQUEST = 421
+HTTP 状态码 421 Misdirected Request。请求被重定向到了一台无法生成响应的服务器。如果一台服务器没有针对请求 URI 的协议类型和主机身份配置响应，就有可能返回这个代码。
+● RESPONSE_UNPROCESSABLE_ENTITY = 422
+HTTP 状态码 422 Unprocessable Entity（WebDAV）。服务器能够理解请求实体的内容类型（所以不适用 415 Unsupported Media Type 状态码），请求实体的语法也是正确的（所以不适用 400 Bad Request 状态码），但仍然无法执行请求中所包含的指令。
+● RESPONSE_LOCKED = 423
+HTTP 状态码 423 Locked（WebDAV）。方法的来源资源或目标资源被锁定。
+● RESPONSE_FAILED_DEPENDENCY = 424
+HTTP 状态码 424 Failed Dependency（WebDAV）。无法在该资源上执行该方法，因为请求的操作依赖于另一个操作，而那个操作失败了。
+● RESPONSE_UPGRADE_REQUIRED = 426
+HTTP 状态码 426 Upgrade Required。服务器拒绝以当前协议执行请求，但客户端升级到另一个协议之后可能会愿意执行。
+● RESPONSE_PRECONDITION_REQUIRED = 428
+HTTP 状态码 428 Precondition Required。原始服务器要求进行条件请求。
+● RESPONSE_TOO_MANY_REQUESTS = 429
+HTTP 状态码 429 Too Many Requests。用户在指定时间段中（见“限流”）发送了过多的请求。静默一段时间后增加请求之间的时间间隔，稍后再试。
+● RESPONSE_REQUEST_HEADER_FIELDS_TOO_LARGE = 431
+HTTP 状态码 431 Request Header Fields Too Large。服务器拒绝处理请求，因为报头字段过大。请求可以在减小报头字段后重新提交。
+● RESPONSE_UNAVAILABLE_FOR_LEGAL_REASONS = 451
+HTTP 状态码 451 Response Unavailable For Legal Reasons。服务器因法律要求而拒绝访问该资源。
+● RESPONSE_INTERNAL_SERVER_ERROR = 500
+HTTP 状态码 500 Internal Server Error。服务器遭遇预料之外的情况，无法完成请求。
+● RESPONSE_NOT_IMPLEMENTED = 501
+HTTP 状态码 501 Not Implemented。服务器不支持完成请求所需的功能。
+● RESPONSE_BAD_GATEWAY = 502
+HTTP 状态码 502 Bad Gateway。网关或代理服务器尝试使用内部服务器处理请求，但从该服务器收到了无效的响应。通常由负载均衡器或者代理服务器返回。
+● RESPONSE_SERVICE_UNAVAILABLE = 503
+HTTP 状态码 503 Service Unavailable。服务器目前无法处理请求，原因是暂时过载或者处于定期维护状态，可能在一段延迟后就能恢复，请稍后再试。
+● RESPONSE_GATEWAY_TIMEOUT = 504
+HTTP 状态码 504 Gateway Timeout。网关或代理服务器尝试使用上游服务器处理请求，但无法在指定时间内从该服务器收到响应。通常由负载均衡器或者代理服务器返回。
+● RESPONSE_HTTP_VERSION_NOT_SUPPORTED = 505
+HTTP 状态码 505 HTTP Version Not Supported。服务器不支持或者拒绝支持请求消息所使用的 HTTP 主版本。
+● RESPONSE_VARIANT_ALSO_NEGOTIATES = 506
+HTTP 状态码 506 Variant Also Negotiates。服务器存在内部配置错误：所选的可变资源被配置为参与自身的透明内容交涉，因此不是交涉过程中的正确端点。
+● RESPONSE_INSUFFICIENT_STORAGE = 507
+HTTP 状态码 507 Insufficient Storage。无法在该资源上执行该方法，因为服务器无法保存成功完成请求所需的表示。
+● RESPONSE_LOOP_DETECTED = 508
+HTTP 状态码 508 Loop Detected。服务器在处理“Depth: infinity”请求时遇到了死循环并终止了操作。该状态表示该操作整体失败。
+● RESPONSE_NOT_EXTENDED = 510
+HTTP 状态码 510 Not Extended。请求未满足访问该资源的策略。服务器应当将所需信息返回给客户端，以便其提交后续请求。
+● RESPONSE_NETWORK_AUTH_REQUIRED = 511
+HTTP 状态码 511 Network Authentication Required。客户端需要身份认证才能访问网络。
+
+
+属性说明
+
+
+● boolblocking_mode_enabled [默认： false]set_blocking_mode(值) setteris_blocking_mode_enabled() getter
+
+为 true 时，执行会阻塞至从响应中读取所有数据为止。
+
+
+● StreamPeerconnectionset_connection(值) setterget_connection() getter
+
+该客户端所使用的连接。
+
+
+● intread_chunk_size [默认： 65536]set_read_chunk_size(值) setterget_read_chunk_size() getter
+
+使用的缓冲区大小，即每次迭代读取的最大字节数。见 read_response_body_chunk()。
+
+
+方法说明
+
+
+● void close()
+
+关闭当前连接，允许重用此HTTPClient。
+
+
+● Error connect_to_host(host: String, port: int = -1, tls_options: TLSOptions = null)
+
+连接到主机。这需要在发送任何请求之前完成。
+
+如果未指定 port（或使用 -1），则自动将其设置为 80（用于 HTTP）和 443（用于 HTTPS）。可以传入可选的 tls_options 参数来自定义受信任的证书颁发机构，或者使用 HTTPS 时的通用名称验证。请参阅 TLSOptions.client() 和 TLSOptions.client_unsafe()。
+
+
+● int get_response_body_length() const
+
+返回响应体长度。
+
+注意：部分 Web 服务器可能不发送响应体长度，此时返回值将为 -1。如果使用分块传输编码，响应体的长度也将为 -1。
+
+注意：由于浏览器的限制，该函数在 Web 平台上始终返回 -1。
+
+
+● int get_response_code() const
+
+返回响应的 HTTP 状态码。
+
+
+● PackedStringArray get_response_headers()
+
+返回响应报头。
+
+
+● Dictionary get_response_headers_as_dictionary()
+
+以 Dictionary 的形式返回所有响应报头。每个条目都是报头名称以及用 "; " 分隔的对应取值。大小写与收到的报头保持一致。
+
+{
+	"content-length": 12,
+	"Content-Type": "application/json; charset=UTF-8",
+} 
+
+
+● Status get_status() const
+
+返回 Status 常量。需要调用 poll() 才能更新状态。
+
+
+● bool has_response() const
+
+为 true 时，则该 HTTPClient 有可用的响应。
+
+
+● bool is_response_chunked() const
+
+为 true 时，则该 HTTPClient 有分块的响应。
+
+
+● Error poll()
+
+调用此方法才能对请求进行处理。使用 get_status() 获取检查。
+
+
+● String query_string_from_dict(fields: Dictionary)
+
+从提供的字典生成 GET/POST application/x-www-form-urlencoded 样式的查询字符串，例如：
+
+var fields = { "username": "user", "password": "pass" }
+var query_string = http_client.query_string_from_dict(fields)
+# 返回 "username=user&password=pass" 
+此外，如果键具有 null 值，则仅添加键本身，而不添加等号和值。如果该值是一个数组，则添加该相同键，与其中的每个值组成一对。
+
+var fields = { "single": 123, "not_valued": null, "multiple": [22, 33, 44] }
+var query_string = http_client.query_string_from_dict(fields)
+# 返回 "single=123&not_valued&multiple=22&multiple=33&multiple=44" 
+
+
+● PackedByteArray read_response_body_chunk()
+
+从响应中读取一块数据。
+
+
+● Error request(method: Method, url: String, headers: PackedStringArray, body: String = "")
+
+使用 method 方法向已连接的服务器发送 HTTP 请求。
+
+URL 参数通常只是主机名后面的部分，所以对于 https://example.com/index.php 来说就是 /index.php。当向 HTTP 代理服务器发送请求时，它应该是一个绝对 URL。对于 HTTPClient.METHOD_OPTIONS 请求，* 也是允许的。对于 HTTPClient.METHOD_CONNECT 请求，它应该是权限组件 (host:port)。
+
+headers 是 HTTP 请求的报头。
+
+要创建带有查询字符串的 POST 请求以推送到服务器，请执行以下操作：
+
+var fields = { "username": "user", "password": "pass" }
+var query_string = http_client.query_string_from_dict(fields)
+var headers = ["Content-Type: application/x-www-form-urlencoded", "Content-Length: " + str(query_string.length())]
+var result = http_client.request(http_client.METHOD_POST, "/index.php", headers, query_string) 
+注意：如果 method 是 HTTPClient.METHOD_GET，则忽略 body 参数。这是因为 GET 方法不能包含请求数据。解决方法是，可以将请求数据作为 URL 中的查询字符串传递。示例见 String.uri_encode()。
+
+
+● Error request_raw(method: Method, url: String, headers: PackedStringArray, body: PackedByteArray)
+
+使用 method 方法向已连接的服务器发送原始 HTTP 请求。
+
+URL 参数通常只是主机名后面的部分，所以对于 https://example.com/index.php 来说就是 /index.php。当向 HTTP 代理服务器发送请求时，它应该是一个绝对 URL。对于 HTTPClient.METHOD_OPTIONS 请求，* 也是允许的。对于 HTTPClient.METHOD_CONNECT 请求，它应该是权限组件 (host:port)。
+
+headers 是 HTTP 请求的报头。
+
+请求体是以字节数组的形式原样发送的，不会进行任何形式的编码。
+
+
+● void set_http_proxy(host: String, port: int)
+
+设置 HTTP 请求使用的代理服务器。
+
+如果 host 为空或者 port 为 -1，则会取消设置代理服务器。
+
+
+● void set_https_proxy(host: String, port: int)
+
+设置 HTTPS 请求使用的代理服务器。
+
+如果 host 为空或者 port 为 -1，则会取消设置代理服务器。
+
+类：   DirAccess
+继承：   RefCounted <   Object
+
+提供管理目录及其内容的方法。
+
+描述
+
+这个类可用于管理目录及其内容，不限于项目文件夹。
+
+DirAccess 无法直接实例化，需要通过静态方法创建，方法接受待打开的路径。
+
+大多数方法都有对应的静态版本，无需创建 DirAccess 即可使用。静态方法仅支持绝对路径（包含 res:// 和 user://）。
+
+# 标准
+var dir = DirAccess.open("user://levels")
+dir.make_dir("world1")
+# 静态
+DirAccess.make_dir_absolute("user://levels/world1") 
+注意：导出后，访问项目目录（"res://"）可能导致意外行为，因为此时部分文件已被转换为引擎所使用的格式，对应的原始文件可能不存在于 PCK 包中。因此，在导出后的项目中访问资源建议使用 ResourceLoader，不要使用 FileAccess。
+
+以下是遍历目录中文件的示例：
+
+func dir_contents(path):
+	var dir = DirAccess.open(path)
+	if dir:
+		dir.list_dir_begin()
+		var file_name = dir.get_next()
+		while file_name != "":
+			if dir.current_is_dir():
+				print("发现目录：" + file_name)
+			else:
+				print("发现文件" + file_name)
+			file_name = dir.get_next()
+	else:
+		print("尝试访问路径时出错。") 
+请牢记，导出后文件名可能发生变化和重映射。如果想要看到和编辑器中一致的实际资源文件列表，请改用 ResourceLoader.list_directory()。
+
+在线教程
+
+● 文件系统
+
+属性
+
+boolinclude_hiddenboolinclude_navigational
+
+方法
+
+Errorchange_dir(to_dir: String)Errorcopy(from: String, to: String, chmod_flags: int = -1)Errorcopy_absolute(from: String, to: String, chmod_flags: int = -1) staticErrorcreate_link(source: String, target: String)DirAccesscreate_temp(prefix: String = "", keep: bool = false) staticboolcurrent_is_dir() constbooldir_exists(path: String)booldir_exists_absolute(path: String) staticboolfile_exists(path: String)Stringget_current_dir(include_drive: bool = true) constintget_current_drive()PackedStringArrayget_directories()PackedStringArrayget_directories_at(path: String) staticintget_drive_count() staticStringget_drive_name(idx: int) staticPackedStringArrayget_files()PackedStringArrayget_files_at(path: String) staticStringget_filesystem_type() constStringget_next()Errorget_open_error() staticintget_space_left()boolis_bundle(path: String) constboolis_case_sensitive(path: String) constboolis_equivalent(path_a: String, path_b: String) constboolis_link(path: String)Errorlist_dir_begin()voidlist_dir_end()Errormake_dir(path: String)Errormake_dir_absolute(path: String) staticErrormake_dir_recursive(path: String)Errormake_dir_recursive_absolute(path: String) staticDirAccessopen(path: String) staticStringread_link(path: String)Errorremove(path: String)Errorremove_absolute(path: String) staticErrorrename(from: String, to: String)Errorrename_absolute(from: String, to: String) static
+
+
+属性说明
+
+
+● boolinclude_hiddenset_include_hidden(值) setterget_include_hidden() getter
+
+如果为 true，则在导航目录时包含隐藏文件。
+
+影响 list_dir_begin()、get_directories()、get_files()。
+
+
+● boolinclude_navigationalset_include_navigational(值) setterget_include_navigational() getter
+
+如果为 true，则在导航目录时包含 . 和 ..。
+
+影响 list_dir_begin() 和 get_directories()。
+
+
+方法说明
+
+
+● Error change_dir(to_dir: String)
+
+将当前打开的目录改为作为参数传递的目录。该参数可以是相对于当前目录的（例如 newdir 或 ../newdir），也可以是绝对路径（例如 /tmp/newdir 或 res://somedir/newdir）。
+
+返回 Error 错误码常量之一（成功时为 OK）。
+
+注意：新目录必须在相同范围内，例如当在 res:// 中打开目录时，无法将其更改为 user:// 目录。如果需要在另一个访问范围中打开目录，请使用 open() 创建一个新实例。
+
+
+● Error copy(from: String, to: String, chmod_flags: int = -1)
+
+将 from 文件复制到 to 目标位置。两个参数都应该是文件的路径，可以是相对路径，也可以是绝对路径。如果目标文件存在并且没有访问保护，则它将被覆盖。
+
+如果 chmod_flags 不同于 -1，且如果在当前操作系统上可用，目标路径的 Unix 权限将设置为提供的值。
+
+返回 Error 错误码常量之一（成功时为 OK）。
+
+
+● Error copy_absolute(from: String, to: String, chmod_flags: int = -1) static
+
+静态版本的 copy()。仅支持绝对路径。
+
+
+● Error create_link(source: String, target: String)
+
+创建文件或文件夹的符号链接。
+
+注意：在 Window 上，使用提升权限运行程序或启用“开发者模式”时该方法才能正常工作。
+
+注意：该方法仅在 macOS、Linux 和 Windows 上实现。
+
+
+● DirAccess create_temp(prefix: String = "", keep: bool = false) static
+
+创建一个临时目录。返回的 DirAccess 被释放时会释放该目录。
+
+如果 prefix 非空，则会用作目录名的前缀，使用 - 分隔。
+
+如果 keep 为 true，则返回的 DirAccess 被释放时不会释放该目录。
+
+如果打开目录失败，则返回 null。你可以使用 get_open_error() 来查看发生的错误。
+
+
+● bool current_is_dir() const
+
+返回上一次 get_next() 调用处理的当前项目是否为目录（. 和 . 属于目录）。
+
+
+● bool dir_exists(path: String)
+
+返回目标目录是否存在。参数可以相对于当前目录，也可以是绝对路径。
+
+注意：使用 res:// 目录下的路径时，在编辑器中返回的 bool 与导出后的返回值可能不同。导出时会将部分文件转换为引擎特有的格式，可能导致目录结构的改变。
+
+
+● bool dir_exists_absolute(path: String) static
+
+dir_exists() 的静态版本。仅支持绝对路径。
+
+注意：使用 res:// 目录下的路径时，在编辑器中返回的 bool 与导出后的返回值可能不同。导出时会将部分文件转换为引擎特有的格式，可能导致目录结构的改变。
+
+
+● bool file_exists(path: String)
+
+返回目标文件是否存在。参数可以相对于当前目录，也可以是绝对路径。
+
+静态版本见 DirAccess.file_exists()。
+
+注意：许多资源类型是导入的（例如纹理和声音文件），它们的源资产不会包含在导出的游戏中，因为只使用导入的版本。有关考虑资源重新映射的替代方法，请参阅 ResourceLoader.exists()。
+
+
+● String get_current_dir(include_drive: bool = true) const
+
+返回当前打开目录的绝对路径（例如 res://文件夹 或 C:\tmp\文件夹）。
+
+
+● int get_current_drive()
+
+返回当前打开目录的驱动器索引。要将返回的索引转换为驱动器名称，请参阅 get_drive_name()。
+
+
+● PackedStringArray get_directories()
+
+返回该目录内容的文件名 PackedStringArray，不含文件。该数组按字母顺序排序。
+
+受 include_hidden 和 include_navigational 的影响。
+
+注意：对于 res:// 下的目录，在编辑器中所返回的目录和导出后所返回的目录可能不同，因为导出时可能将部分文件转换为引擎特有的格式。
+
+
+● PackedStringArray get_directories_at(path: String) static
+
+返回 path 所指向目录内容的文件名 PackedStringArray，不含文件。该数组按字母顺序排序。
+
+如果需要对包含内容做进一步控制，请使用 get_directories()。
+
+注意：对于 res:// 下的目录，在编辑器中所返回的目录和导出后所返回的目录可能不同，因为导出时可能将部分文件转换为引擎特有的格式。
+
+
+● int get_drive_count() static
+
+在 Windows 上，返回挂载在当前文件系统上的驱动器（分区）数量。
+
+在 macOS 和 Android 上，返回挂载卷的数量。
+
+在 Linux 上，返回挂载卷与 GTK 3 书签的数量。
+
+在其他平台上，该方法返回 0。
+
+
+● String get_drive_name(idx: int) static
+
+在 Windows 上，返回作为参数传递的驱动器（分区）的名称（例如 C:）。
+
+在 macOS 上，返回作为参数传递的挂载卷的路径。
+
+在 Linux 上，返回作为参数传递的挂载卷或 GTK 3 书签的路径。
+
+在 Android（API 等级 30+）上，返回作为参数的挂载卷的路径。
+
+在其他平台上，或者当请求的驱动器不存在时，该方法会返回空的 String。
+
+
+● PackedStringArray get_files()
+
+返回目录内容的文件名 PackedStringArray，不含目录。该数组按字母排序。
+
+受 include_hidden 的影响。
+
+注意：在导出后的项目中对 res:// 使用时，只会返回确实在 PCK 的给定文件夹中存在的文件。在实践中，导入后的资源是存放在顶层的 .godot 文件夹中的，因此只会返回 *.gd 和 *.import 文件的路径（以及 project.godot 或者 project.binary 和项目图标等文件）。导出后的项目中，返回的列表也会因为 编辑器 > 导出 > 将文本资源转换为二进制 是否为 true 而变化。
+
+
+● PackedStringArray get_files_at(path: String) static
+
+返回 path 所指向目录内容的文件名 PackedStringArray，不含目录。该数组按字母排序。
+
+如果需要对包含内容做进一步控制，请使用 get_files()。
+
+注意：在导出后的项目中对 res:// 使用时，只会返回确实在 PCK 的给定文件夹中存在的文件。在实践中，导入后的资源是存放在顶层的 .godot/ 文件夹中的，因此只会返回 .gd 和 .import 文件的路径（以及 project.godot 或者 project.binary 和项目图标等文件）。导出后的项目中，返回的列表也会因为 编辑器 > 导出 > 将文本资源转换为二进制 而变化。
+
+
+● String get_filesystem_type() const
+
+返回当前目录所在磁盘的文件系统类型名称。返回的值是大写字符串，如 NTFS、FAT32、EXFAT、APFS、EXT4、BTRFS 等。
+
+注意：该方法在 macOS、Linux、Windows 以及 PCK 虚拟文件系统上实现。
+
+
+● String get_next()
+
+返回当前目录中的下一个元素（文件或目录）。
+
+返回的是文件或目录的名称（不是完整路径）。完全处理完流之后，该方法会返回空 String 并自动将流关闭（即此时不必再调用 list_dir_end()）。
+
+
+● Error get_open_error() static
+
+返回当前线程中最后一次 open() 调用的结果。
+
+
+● int get_space_left()
+
+返回当前目录所在磁盘的可用空间，单位为字节。如果该平台查询可用空间的方法失败，则返回 0。
+
+
+● bool is_bundle(path: String) const
+
+如果该目录为 macOS 捆绑包，则返回 true。
+
+注意：该方法在 macOS 上实现。
+
+
+● bool is_case_sensitive(path: String) const
+
+如果文件系统或目录使用区分大小写的文件名，则返回 true。
+
+注意：该方法在 macOS、Linux（仅对于 EXT4 和 F2FS 文件系统）和 Windows 上实现。在其他平台上，它始终返回 true。
+
+
+● bool is_equivalent(path_a: String, path_b: String) const
+
+如果路径 path_a 和路径 path_b 解析为同一个文件系统对象则返回 true。否则返回 false，即使这两个文件的内容完全相同（例如，两个相同的文件副本，但不是符号链接）。
+
+
+● bool is_link(path: String)
+
+如果文件或目录为符号链接、目录联接等重解析点，则返回 true。
+
+注意：该方法在 macOS、Linux 和 Windows 上实现。
+
+
+● Error list_dir_begin()
+
+初始化用于通过 get_next() 函数列出所有文件和目录的流，如果需要还会关闭目前打开的流。处理完流之后，一般应使用 list_dir_end() 关闭。
+
+受 include_hidden 和 include_navigational 的影响。
+
+注意：该方法返回的文件和目录顺序是不确定的，不同操作系统也可能不同。如果你想要获取按字母排序的文件或文件夹列表，请使用 get_files() 或 get_directories()。
+
+
+● void list_dir_end()
+
+关闭用 list_dir_begin() 打开的当前流（并不关注是否已经用 get_next() 完成处理）。
+
+
+● Error make_dir(path: String)
+
+创建目录。参数可以相对于当前目录，也可以是绝对路径。目标目录应该位于已经存在的目录中（递归创建完整的路径请参阅 make_dir_recursive()）。
+
+返回 Error 错误码常量（成功时为 OK）。
+
+
+● Error make_dir_absolute(path: String) static
+
+静态版本的 make_dir()。仅支持绝对路径。
+
+
+● Error make_dir_recursive(path: String)
+
+递归调用 make_dir() 方法，创建目标目录及其路径中所有必要的中间目录。参数可以相对于当前目录，也可以是绝对路径。
+
+返回 Error 错误码常量（成功时为 OK）。
+
+
+● Error make_dir_recursive_absolute(path: String) static
+
+静态版本的 make_dir_recursive()。仅支持绝对路径。
+
+
+● DirAccess open(path: String) static
+
+新建 DirAccess 对象并打开文件系统中的某个现存目录。path 参数可以是在项目树中（res://folder）、用户目录中（user://folder），也可以是用户文件系统的绝对路径（例如 /tmp/folder 或 C:\tmp\folder）。
+
+如果打开目录失败，则返回 null。你可以使用 get_open_error() 来查看发生的错误。
+
+
+● String read_link(path: String)
+
+返回符号链接的目标。
+
+注意：该方法在 macOS、Linux 和 Windows 上实现。
+
+
+● Error remove(path: String)
+
+将目标文件或空目录永久删除。参数可以相对于当前目录，也可以是绝对路径。如果目标目录非空，则操作失败。
+
+如果你不想永久删除该文件/目录，请改用 OS.move_to_trash()。
+
+返回 Error 错误码常量（成功时为 OK）。
+
+
+● Error remove_absolute(path: String) static
+
+静态版本的 remove()。仅支持绝对路径。
+
+
+● Error rename(from: String, to: String)
+
+将 from 文件或目录重命名为（移动至）to 目标。两个参数都应该是文件或目录的路径，可以是相对路径也可以是绝对路径。如果目标文件或目录已存在，并且没有写保护，则会被覆盖。
+
+返回 Error 错误码常量（成功时为 OK）。
+
+
+● Error rename_absolute(from: String, to: String) static
+
+静态版本的 rename()。仅支持绝对路径。
+
+类：   Marshalls
+继承：   Object
+
+数据转换（marshalling）和编码辅助工具。
+
+描述
+
+提供进行数据转换和编码的实用函数。
+
+方法
+
+PackedByteArraybase64_to_raw(base64_str: String)Stringbase64_to_utf8(base64_str: String)Variantbase64_to_variant(base64_str: String, allow_objects: bool = false)Stringraw_to_base64(array: PackedByteArray)Stringutf8_to_base64(utf8_str: String)Stringvariant_to_base64(variant: Variant, full_objects: bool = false)
+
+
+方法说明
+
+
+● PackedByteArray base64_to_raw(base64_str: String)
+
+返回与 Base64 编码字符串 base64_str 相对应的解码 PackedByteArray。
+
+
+● String base64_to_utf8(base64_str: String)
+
+返回与 Base64 编码字符串 base64_str 相对应的解码字符串。
+
+
+● Variant base64_to_variant(base64_str: String, allow_objects: bool = false)
+
+返回与 Base64 编码字符串 base64_str 相对应的解码 Variant。如果 allow_objects 为 true，则允许对对象进行解码。
+
+内部实现时，使用的解码机制与 @GlobalScope.bytes_to_var() 方法相同。
+
+警告：反序列化的对象可能包含会被执行的代码。如果序列化的对象来自不受信任的来源，请不要使用这个选项，以避免潜在的安全威胁，如远程代码执行。
+
+
+● String raw_to_base64(array: PackedByteArray)
+
+返回给定 PackedByteArray 的 Base64 编码的字符串。
+
+
+● String utf8_to_base64(utf8_str: String)
+
+返回 UTF-8 字符串 utf8_str 的 Base64 编码的字符串。
+
+
+● String variant_to_base64(variant: Variant, full_objects: bool = false)
+
+返回经过 Base64 编码的 Variant variant 的字符串。如果 full_objects 为 true，则允许将对象进行编码（有可能包括代码）。
+
+内部实现时，使用的编码机制与 @GlobalScope.var_to_bytes() 方法相同。
+
+类：   FileAccess
+继承：   RefCounted <   Object
+
+提供用于文件读写操作的方法。
+
+描述
+
+这个类可以用于在用户设备的文件系统中永久存储数据，也可以从中读取数据。适用于存储游戏存档数据或玩家配置文件。
+
+示例：如何读写文件。《数据路径》  文档中提到的用户数据文件夹中会存储一个名叫 "save_game.dat" 的文件：
+
+func save_to_file(content):
+	var file = FileAccess.open("user://save_game.dat", FileAccess.WRITE)
+	file.store_string(content)
+
+func load_from_file():
+	var file = FileAccess.open("user://save_game.dat", FileAccess.READ)
+	var content = file.get_as_text()
+	return content 
+FileAccess 实例拥有自己的文件游标，它是文件中下一次读/写操作将发生的位置（单位为字节）。诸如 get_8()、get_16()、store_8() 和 store_16() 等函数会将文件游标向前移动读/写的字节数。可以使用 seek() 或 seek_end() 将文件游标移动到特定位置，且可以使用 get_position() 获取其位置。
+
+FileAccess 实例被释放时会关闭对应的文件。由于这个类继承自 RefCounted，不再使用实例时会自动触发该行为。可以使用 close() 在此之前显式关闭。在 C# 中引用必须手动释放，可以通过 using 语句或直接调用 Dispose 方法来完成。
+
+注意：要在导出后访问项目资源，建议使用 ResourceLoader 而不是 FileAccess，因为有些文件已被转换为特定于引擎的格式，并且它们的原始源文件可能并不存在于导出的 PCK 包中。如果使用 FileAccess，请确保通过在导入面板中将其导入模式更改为保留文件（按原样导出）来将文件包含在导出中；或者对于没有此选项的文件，请在导出对话框中更改非资源导出筛选器，加上文件的扩展名（例如 *.txt）。
+
+注意：只有当进程“正常”退出时（例如通过单击窗口管理器的关闭按钮或按 Alt + F4），文件才会自动关闭。如果在项目运行时按 F8 停止项目执行，则不会关闭文件，因为游戏进程将被中止。可以通过定期调用 flush() 来解决这个问题。
+
+在线教程
+
+● 文件系统
+● 运行时文件加载与保存
+● 二进制序列化 API
+● 3D 体素演示
+
+属性
+
+boolbig_endian
+
+方法
+
+voidclose()FileAccesscreate_temp(mode_flags: int, prefix: String = "", extension: String = "", keep: bool = false) staticbooleof_reached() constboolfile_exists(path: String) staticvoidflush()intget_8() constintget_16() constintget_32() constintget_64() constintget_access_time(file: String) staticStringget_as_text(skip_cr: bool = false) constPackedByteArrayget_buffer(length: int) constPackedStringArrayget_csv_line(delim: String = ",") constfloatget_double() constErrorget_error() constPackedByteArrayget_file_as_bytes(path: String) staticStringget_file_as_string(path: String) staticfloatget_float() constfloatget_half() constboolget_hidden_attribute(file: String) staticintget_length() constStringget_line() constStringget_md5(path: String) staticintget_modified_time(file: String) staticErrorget_open_error() staticStringget_pascal_string()Stringget_path() constStringget_path_absolute() constintget_position() constboolget_read_only_attribute(file: String) staticfloatget_real() constStringget_sha256(path: String) staticintget_size(file: String) staticBitField[UnixPermissionFlags]get_unix_permissions(file: String) staticVariantget_var(allow_objects: bool = false) constboolis_open() constFileAccessopen(path: String, flags: ModeFlags) staticFileAccessopen_compressed(path: String, mode_flags: ModeFlags, compression_mode: CompressionMode = 0) staticFileAccessopen_encrypted(path: String, mode_flags: ModeFlags, key: PackedByteArray, iv: PackedByteArray = PackedByteArray()) staticFileAccessopen_encrypted_with_pass(path: String, mode_flags: ModeFlags, pass: String) staticErrorresize(length: int)voidseek(position: int)voidseek_end(position: int = 0)Errorset_hidden_attribute(file: String, hidden: bool) staticErrorset_read_only_attribute(file: String, ro: bool) staticErrorset_unix_permissions(file: String, permissions: BitField[UnixPermissionFlags]) staticboolstore_8(value: int)boolstore_16(value: int)boolstore_32(value: int)boolstore_64(value: int)boolstore_buffer(buffer: PackedByteArray)boolstore_csv_line(values: PackedStringArray, delim: String = ",")boolstore_double(value: float)boolstore_float(value: float)boolstore_half(value: float)boolstore_line(line: String)boolstore_pascal_string(string: String)boolstore_real(value: float)boolstore_string(string: String)boolstore_var(value: Variant, full_objects: bool = false)
+
+枚举
+
+enum ModeFlags:
+
+● READ = 1
+打开文件进行读取操作。文件游标位于文件的开头。
+
+● WRITE = 2
+打开文件进行写入操作。如果文件不存在则会创建该文件，如果存在则会截断。
+
+注意：创建文件必须在已有目录中执行。如果要递归创建文件路径中的目录，见 DirAccess.make_dir_recursive()。
+
+● READ_WRITE = 3
+打开文件进行读写操作。不会截断文件。文件游标位于文件的开头。
+
+● WRITE_READ = 7
+打开文件进行读写操作。如果文件不存在则会创建该文件，如果存在则会截断。文件游标位于文件的开头。
+
+注意：创建文件必须在已有目录中执行。如果要递归创建文件路径中的目录，见 DirAccess.make_dir_recursive()。
+
+enum CompressionMode:
+
+● COMPRESSION_FASTLZ = 0
+使用 FastLZ   压缩方法。
+● COMPRESSION_DEFLATE = 1
+使用 DEFLATE   压缩方法。
+● COMPRESSION_ZSTD = 2
+使用 Zstandard   压缩方法。
+● COMPRESSION_GZIP = 3
+使用 gzip   压缩方法。
+● COMPRESSION_BROTLI = 4
+使用 brotli   压缩方法（仅支持解压缩）。
+
+flags UnixPermissionFlags:
+
+● UNIX_READ_OWNER = 256
+读取所有者比特位。
+● UNIX_WRITE_OWNER = 128
+写入所有者比特位。
+● UNIX_EXECUTE_OWNER = 64
+执行所有者比特位。
+● UNIX_READ_GROUP = 32
+读取组比特位。
+● UNIX_WRITE_GROUP = 16
+写入组比特位。
+● UNIX_EXECUTE_GROUP = 8
+执行组比特位。
+● UNIX_READ_OTHER = 4
+读取其他比特位。
+● UNIX_WRITE_OTHER = 2
+写入其他比特位。
+● UNIX_EXECUTE_OTHER = 1
+执行其他比特位。
+● UNIX_SET_USER_ID = 2048
+在执行比特位上设置用户 ID 。
+● UNIX_SET_GROUP_ID = 1024
+在执行位上设置组 ID。
+● UNIX_RESTRICTED_DELETE = 512
+限制删除（粘性）比特位。
+
+
+属性说明
+
+
+● boolbig_endianset_big_endian(值) setteris_big_endian() getter
+
+如果为 true，则文件用大端字节序  读取。如果为 false，则文件以小端字节序读取。如果有疑问，请将其保留为 false，因为大多数文件都是用小端字节序编写的。
+
+注意：每当打开文件时，该选项总会重置为系统字节序，在支持的所有平台上均为小端序。因此必须在打开文件之后设置 big_endian，而不是之前。
+
+
+方法说明
+
+
+● void close()
+
+关闭当前打开的文件，阻止后续的读写操作。如果要将数据持久化到磁盘而不关闭文件，请使用 flush()。
+
+注意：FileAccess 被释放时会自动关闭，释放发生在离开作用域或被赋值为 null 时。在 C# 中，使用完后必须弃置该引用，可以使用 using 语句或直接调用 Dispose 方法。
+
+
+● FileAccess create_temp(mode_flags: int, prefix: String = "", extension: String = "", keep: bool = false) static
+
+创建临时文件。该文件将在返回的 FileAccess 释放时释放。
+
+如果 prefix 非空，则会将其添加为文件名的前缀，用 - 分隔。
+
+如果 extension 非空，则会将其追加到临时文件名之后。
+
+如果 keep 为 true，则在返回的 FileAccess 释放时不会删除该文件。
+
+如果打开文件失败则返回 null，可以使用 get_open_error() 检查发生的错误。
+
+
+● bool eof_reached() const
+
+如果文件光标已经读到了文件末尾，则返回 true。
+
+注意：eof_reached() == false 不能用于检查是否有更多可用数据。要在有更多可用数据时循环，请使用：
+
+while file.get_position() < file.get_length():
+	# 读取数据 
+
+
+● bool file_exists(path: String) static
+
+如果文件存在于给定路径中，则返回 true。
+
+注意：许多资源类型是导入的（例如纹理或声音文件），它们的源资产不会包含在导出的游戏中，因为只使用导入的版本。有关考虑资源重新映射的替代方法，请参阅 ResourceLoader.exists()。
+
+对于非静态的相对等效项，请使用 DirAccess.file_exists()。
+
+
+● void flush()
+
+将文件的缓冲区写入磁盘。当关闭文件时，会自动进行刷新。这意味着你不需要在关闭文件前手动调用 flush()。尽管如此，即使项目崩溃而不是正常关闭，调用 flush() 仍可用于确保数据安全。
+
+注意：只有在你真正需要的时候才调用 flush()。否则，它会因不断的磁盘写入而降低性能。
+
+
+● int get_8() const
+
+以整数形式返回文件中接下来的 8 位。文件游标前进 1 个字节。请参阅 store_8()，详细了解哪些值可以通过这种方式存储和检索。
+
+
+● int get_16() const
+
+以整数形式返回文件中接下来的 16 位。文件游标前进 2 个字节。请参阅 store_16()，以获取有关可以通过这种方式存储和检索哪些值的详细信息。
+
+
+● int get_32() const
+
+以整数形式返回文件中接下来的 32 位。文件游标前进 4 个字节。请参阅 store_32()，以获取有关可以通过这种方式存储和检索哪些值的详细信息。
+
+
+● int get_64() const
+
+以整数形式返回文件中接下来的 64 位。文件游标前进 8 个字节。请参阅 store_64()，以获取有关可以通过这种方式存储和检索哪些值的详细信息。
+
+
+● int get_access_time(file: String) static
+
+返回文件 file 的最后修改时间，使用 Unix 时间戳格式，出错时返回 0。这个 Unix 时间戳可以用 Time 单例转换为其他格式。
+
+
+● String get_as_text(skip_cr: bool = false) const
+
+以 String 形式返回整个文件。文本会按照 UTF-8 编码解析。忽略文件游标，不会对其产生影响。
+
+如果 skip_cr 为 true，解析 UTF-8 时会忽略回车符（\r，CR），因此只使用换行符（\n，LF）表示新一行的开始（Unix 规范）。
+
+
+● PackedByteArray get_buffer(length: int) const
+
+将文件中接下来的 length 个字节作为 PackedByteArray 返回。文件游标前进 length 个字节。
+
+
+● PackedStringArray get_csv_line(delim: String = ",") const
+
+以 CSV（逗号分隔值）格式返回文件的下一个值。可以传递不同的分隔符 delim，以使用默认 ","（逗号）以外的其他分隔符。这个分隔符必须为一个字符长，且不能是双引号。
+
+文本被解析为 UTF-8 编码。如果文本值包含分隔符，则它们必须用双引号引起来。文本值中的双引号可以通过将它们的出现次数加倍来转义。文件游标前进至行尾的换行符后。
+
+例如，以下 CSV 行是有效的，每行将被正确解析为两个字符串：
+
+Alice,"Hello, Bob!"
+Bob,Alice! What a surprise!
+Alice,"I thought you'd reply with ""Hello, world""." 
+请注意第二行如何省略封闭的引号，因为它不包含分隔符。然而它可以很好地使用引号，它只是为了演示目的而没有编写。第三行必须为每个需要被解析为引号而不是文本值的末尾而使用 ""。
+
+
+● float get_double() const
+
+将文件中接下来的 64 位作为浮点数返回。文件游标前进 8 个字节。
+
+
+● Error get_error() const
+
+返回试图执行操作时发生的最后一个错误。请与 Error 中的 ERR_FILE_* 常量比较。
+
+
+● PackedByteArray get_file_as_bytes(path: String) static
+
+将整个 path 文件内容作为 PackedByteArray 返回，无需任何解码。
+
+如果打开文件时发生错误，则返回空的 PackedByteArray。你可以使用 get_open_error() 来检查发生的错误。
+
+
+● String get_file_as_string(path: String) static
+
+将整个 path 文件内容以 String 形式返回。文本被解释为 UTF-8 编码。
+
+如果打开文件时发生错误，则返回空 String。可以使用 get_open_error() 来检查发生的错误。
+
+
+● float get_float() const
+
+将文件中接下来的 32 位作为浮点数返回。文件游标前进 4 个字节。
+
+
+● float get_half() const
+
+将文件中接下来的 16 位作为半精度浮点数返回。文件游标前进 2 个字节。
+
+
+● bool get_hidden_attribute(file: String) static
+
+如果文件 hidden 属性已设置，则返回 true。
+
+注意：该方法在 iOS、BSD、macOS 和 Windows 上实现。
+
+
+● int get_length() const
+
+返回文件的大小，单位为字节。如果是管道，则返回可以从管道中读取的字节数。
+
+
+● String get_line() const
+
+以 String 的形式返回文件中的下一行。返回的字符串不包含换行符（\n）和回车符（\r），但是会包含开头和结尾的其他空白字符。文件游标前进至行尾的换行符之后。
+
+文本按照 UTF-8 编码规则进行解析。
+
+
+● String get_md5(path: String) static
+
+返回一个给定路径文件的 MD5 字符串，如果失败则返回一个空的 String。
+
+
+● int get_modified_time(file: String) static
+
+返回 file 的最后修改时间，使用 Unix 时间戳格式，出错时返回 0。这个 Unix 时间戳可以用 Time 单例转换为其他格式。
+
+
+● Error get_open_error() static
+
+返回当前线程中最后一次 open() 调用的结果。
+
+
+● String get_pascal_string()
+
+返回文件中的一个以 Pascal 格式保存的 String，即字符串的长度在开头显式存储。见 store_pascal_string()。可能包含换行符。文件游标前进至读取的字节之后。
+
+文本按照 UTF-8 编码规则进行解析。
+
+
+● String get_path() const
+
+返回当前打开的文件的路径为String。
+
+
+● String get_path_absolute() const
+
+返回当前打开的文件的绝对路径为String。
+
+
+● int get_position() const
+
+返回文件游标的位置，单位为字节，相对于文件的开头。文件读写游标由 seek() 和 seek_end() 设置，读写操作会导致游标前进。
+
+
+● bool get_read_only_attribute(file: String) static
+
+如果文件 read only 属性已设置，则返回 true。
+
+注意：此方法在 iOS、BSD、macOS 和 Windows 上实现。
+
+
+● float get_real() const
+
+返回文件中后续数据构成的一个浮点数。文件游标前进 4 个或 8 个字节，取决于保存文件的 Godot 构建所使用的精度。
+
+如果保存文件的是使用 precision=single 编译的 Godot 构建（默认），则会从文件中读取 32 位。否则如果是使用 precision=double 编译的，那么读取的就是 64 位。
+
+
+● String get_sha256(path: String) static
+
+返回一个表示给定路径下文件的 SHA-256 String，失败时返回一个空的 String。
+
+
+● int get_size(file: String) static
+
+返回文件大小，单位为字节，出错时为 -1。
+
+
+● BitField[UnixPermissionFlags] get_unix_permissions(file: String) static
+
+返回文件的 UNIX 权限。
+
+注意：该方法在 iOS、Linux/BSD 和 macOS 上实现。
+
+
+● Variant get_var(allow_objects: bool = false) const
+
+返回文件中的下一个 Variant 值。如果 allow_objects 为 true，则允许解码对象。这会使文件光标前进读取的字节数。
+
+在内部，这使用与 @GlobalScope.bytes_to_var() 方法相同的解码机制，如在二进制序列化 API   文档中所述。
+
+警告：反序列化得到的对象可能包含被执行的代码。如果序列化的对象来自不受信任的来源，请不要使用这个选项，以避免潜在的安全威胁，如远程代码执行。
+
+
+● bool is_open() const
+
+如果文件当前被打开，返回 true。
+
+
+● FileAccess open(path: String, flags: ModeFlags) static
+
+创建一个新的 FileAccess 对象，会根据标志来确定以写入还是读取模式打开文件。
+
+如果打开文件失败，则返回 null 。你可以使用 get_open_error() 来检查发生的错误。
+
+
+● FileAccess open_compressed(path: String, mode_flags: ModeFlags, compression_mode: CompressionMode = 0) static
+
+创建一个新的 FileAccess 对象，并打开一个压缩文件以进行读取或写入。
+
+注意：open_compressed() 只能读取 Godot 保存的文件，不能读取第三方压缩格式。有关解决方法，请参阅 GitHub 问题 #28999  。
+
+如果打开文件失败，则返回 null。可以使用 get_open_error() 来检查发生的错误。
+
+
+● FileAccess open_encrypted(path: String, mode_flags: ModeFlags, key: PackedByteArray, iv: PackedByteArray = PackedByteArray()) static
+
+创建一个新的 FileAccess 对象，并以写入或读取模式打开一个加密文件。需要传入一个二进制密钥来加密/解密它。
+
+注意：提供的密钥必须是 32 字节长。
+
+如果打开文件失败，则返回 null。可以使用 get_open_error() 来检查发生的错误。
+
+
+● FileAccess open_encrypted_with_pass(path: String, mode_flags: ModeFlags, pass: String) static
+
+创建一个新的 FileAccess 对象，以写或读的模式打开一个加密文件。你需要传递一个密码来加密/解密它。
+
+如果打开文件失败，则返回 null 。你可以使用 get_open_error() 来检查发生的错误。
+
+
+● Error resize(length: int)
+
+将文件大小修改为指定长度。文件必须使用允许写操作的模式打开。如果扩展了文件，则会追加 NUL 字符。如果截断了文件，则会丢弃从文件末尾到文件原长度之间的所有数据。
+
+
+● void seek(position: int)
+
+将文件读写游标修改至指定位置（单位为字节，相对于文件的开头）。修改 get_position() 的返回值。
+
+
+● void seek_end(position: int = 0)
+
+将文件读写游标修改至指定位置（单位为字节，相对于文件的末尾）。修改 get_position() 的返回值。
+
+注意：指定的是偏移量，因此应当使用负数，否则文件游标会处于文件末尾。
+
+
+● Error set_hidden_attribute(file: String, hidden: bool) static
+
+设置文件 hidden 属性。
+
+注意：该方法在 iOS、BSD、macOS 和 Windows 上实现。
+
+
+● Error set_read_only_attribute(file: String, ro: bool) static
+
+设置文件 read only 属性。
+
+注意：该方法在 iOS、BSD、macOS 和 Windows 上实现。
+
+
+● Error set_unix_permissions(file: String, permissions: BitField[UnixPermissionFlags]) static
+
+设置文件的 UNIX 权限。
+
+注意：该方法在 iOS、Linux/BSD 和 macOS 上实现。
+
+
+● bool store_8(value: int)
+
+将一个整数以 8 位形式存储在文件中。文件游标前进 1 个字节。如果操作成功则返回 true。
+
+注意：value 应该位于 [0, 255] 的区间内。任何其他的值都会溢出并环绕。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+要存储有符号的整数，请使用 store_64()，或者手动转换（见 store_16() 的例子）。
+
+
+● bool store_16(value: int)
+
+将一个整数以 16 位形式存储到文件中。文件游标前进 2 个字节。如果操作成功则返回 true。
+
+注意：value 应该位于 [0, 2^16 - 1] 区间内。任何其他的值都会溢出并进行环绕。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+要存储有符号的整数，请使用 store_64() 或者从区间 [-2^15, 2^15 - 1] 中存储一个有符号的整数（即保留一位作为符号），在读取时手动计算其符号。例如：
+
+const MAX_15B = 1 << 15
+const MAX_16B = 1 << 16
+
+func unsigned16_to_signed(unsigned):
+	return (unsigned + MAX_15B) % MAX_16B - MAX_15B
+
+func _ready():
+	var f = FileAccess.open("user://file.dat", FileAccess.WRITE_READ)
+	f.store_16(-42) # 发生环绕，存储 65494 (2^16 - 42)。
+	f.store_16(121) # 在范围内，存储 121。
+	f.seek(0) # 回到开头，读取存储的值。
+	var read1 = f.get_16() # 65494
+	var read2 = f.get_16() # 121
+	var converted1 = unsigned16_to_signed(read1) # -42
+	var converted2 = unsigned16_to_signed(read2) # 121 
+
+
+● bool store_32(value: int)
+
+将一个整数以 32 位形式存储到文件中。文件游标前进 4 个字节。如果操作成功则返回 true。
+
+注意：value 应该位于 [0, 2^32 - 1] 区间内。任何其他的值都会溢出并环绕。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+要存储有符号的整数，请使用 store_64()，或者手动转换（见 store_16() 的例子）。
+
+
+● bool store_64(value: int)
+
+将一个整数以 64 位形式存储到文件中。文件游标前进 8 个字节。如果操作成功则返回 true。
+
+注意：value 必须位于 [-2^63, 2^63 - 1] 的区间内（即有效的 int 值）。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+
+● bool store_buffer(buffer: PackedByteArray)
+
+将给定的字节数组存储在文件中。文件游标前进写入的字节数。如果操作成功则返回 true。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+
+● bool store_csv_line(values: PackedStringArray, delim: String = ",")
+
+将给定的 PackedStringArray 作为 CSV（逗号分隔值）格式的行存储在文件中。你可以传递不同的分隔符 delim 以使用默认 ","（逗号）以外的其他分隔符。此分隔符的长度必须为一个字符。
+
+将使用 UTF-8 编码文本。如果操作成功则返回 true。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+
+● bool store_double(value: float)
+
+将一个浮点数以 64 位的形式存储到文件中。文件游标前进 8 个字节。如果操作成功则返回 true。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+
+● bool store_float(value: float)
+
+将一个浮点数以 32 位的形式存储到文件中。文件游标前进 4 个字节。如果操作成功则返回 true。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+
+● bool store_half(value: float)
+
+将一个半精度浮点数以 16 位的形式存储到文件中。文件游标前进 2 个字节。如果操作成功则返回 true。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+
+● bool store_line(line: String)
+
+将 line 存储到文件中，后跟一个换行符（\n），文本使用 UTF-8 编码。文件游标前进该行长度，至换行符后。写入的字节数取决于 UTF-8 编码后的字节，可能与 String.length() 不同，后者计算的是 UTF-32 码位的数量。如果操作成功则返回 true。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+
+● bool store_pascal_string(string: String)
+
+将给定的 String 作为一行存储到文件中，使用 Pascal 格式（即同时存储字符串的长度）。文本使用 UTF-8 编码。文件游标的前进量为写入的字节数，取决于 UTF-8 编码后的字节，可能与 String.length() 不同，后者计算的是 UTF-32 码位的数量。如果操作成功则返回 true。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+
+● bool store_real(value: float)
+
+将一个浮点数存储到文件中。文件游标前进 4 个或 8 个字节，取决于当前 Godot 构建所使用的精度。
+
+如果所用的 Godot 构建在编译时使用了 precision=single 选项（默认），则该方法保存的是 32 位 float。否则如果编译时使用了 precision=double 选项，则保存的是 64 位 float。如果操作成功则返回 true。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+
+● bool store_string(string: String)
+
+将 string 存储到文件中，不带换行符（\n），文本使用 UTF-8 编码。文件游标的前进量为 UTF-8 编码后的字节数，可能与 String.length() 不同，后者计算的是 UTF-32 码位的数量。如果操作成功则返回 true。
+
+注意：该方法适用于写入文本文件。字符串以 UTF-8 编码的缓冲区形式存储，不带字符串长度，不以零结尾，加载并非易事。如果你想要在二进制文件中存储便于读取的字符串，请考虑改用 store_pascal_string()。从文本文件中读取字符串可以使用 get_buffer(length).get_string_from_utf8()（前提是知道长度）或 get_as_text()。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+
+● bool store_var(value: Variant, full_objects: bool = false)
+
+将任意 Variant 值存储到文件中。如果 full_objects 为 true，则允许将对象进行编码（可能包含代码）。文件游标的前进量为写入的字节数。如果操作成功则返回 true。
+
+内部使用的编码机制与 @GlobalScope.var_to_bytes() 方法相同，见《二进制序列化 API   》文档。
+
+注意：不是所有属性都会包含在内。只会对设置了 PROPERTY_USAGE_STORAGE 标志的属性进行序列化。在你的类中覆盖 Object._get_property_list() 可以为属性添加新的用法标志。你也可以调用 Object._get_property_list() 查看属性用法的设置情况。可能的用法标志见 PropertyUsageFlags。
+
+注意：出错时，文件位置标识符的取值不确定。
+
+类：   Crypto
+继承：   RefCounted <   Object
+
+提供对高阶加密功能的访问。
+
+描述
+
+Crypto 类提供对高阶加密功能的访问。
+
+目前，包括非对称密钥的加密/解密和签名/验证、生成加密安全随机字节、RSA 密钥、HMAC 摘要以及自签名的 X509Certificate。
+
+var crypto = Crypto.new()
+
+# 生成新的 RSA 密钥。
+var key = crypto.generate_rsa(4096)
+
+# 使用给定的密钥生成新的自签名证书。
+var cert = crypto.generate_self_signed_certificate(key, "CN=mydomain.com,O=My Game Company,C=IT")
+
+# 将密钥和证书保存在用户文件夹中。
+key.save("user://generated.key")
+cert.save("user://generated.crt")
+
+# 加密
+var data = "Some data"
+var encrypted = crypto.encrypt(key, data.to_utf8_buffer())
+
+# 解密
+var decrypted = crypto.decrypt(key, encrypted)
+
+# 签名
+var signature = crypto.sign(HashingContext.HASH_SHA256, data.sha256_buffer(), key)
+
+# 验证
+var verified = crypto.verify(HashingContext.HASH_SHA256, data.sha256_buffer(), signature, key)
+
+# 校验
+assert(verified)
+assert(data.to_utf8_buffer() == decrypted) 
+
+方法
+
+boolconstant_time_compare(trusted: PackedByteArray, received: PackedByteArray)PackedByteArraydecrypt(key: CryptoKey, ciphertext: PackedByteArray)PackedByteArrayencrypt(key: CryptoKey, plaintext: PackedByteArray)PackedByteArraygenerate_random_bytes(size: int)CryptoKeygenerate_rsa(size: int)X509Certificategenerate_self_signed_certificate(key: CryptoKey, issuer_name: String = "CN=myserver,O=myorganisation,C=IT", not_before: String = "20140101000000", not_after: String = "20340101000000")PackedByteArrayhmac_digest(hash_type: HashingContext.HashType, key: PackedByteArray, msg: PackedByteArray)PackedByteArraysign(hash_type: HashingContext.HashType, hash: PackedByteArray, key: CryptoKey)boolverify(hash_type: HashingContext.HashType, hash: PackedByteArray, signature: PackedByteArray, key: CryptoKey)
+
+
+方法说明
+
+
+● bool constant_time_compare(trusted: PackedByteArray, received: PackedByteArray)
+
+比较两个 PackedByteArray 是否相等，不会泄漏时序信息，能够防止时序攻击。
+
+详见这篇博文  。
+
+
+● PackedByteArray decrypt(key: CryptoKey, ciphertext: PackedByteArray)
+
+用提供的私钥 key 解密给定的密文 ciphertext。
+
+注意：所接受的密文的最大尺寸受到密钥大小的限制。
+
+
+● PackedByteArray encrypt(key: CryptoKey, plaintext: PackedByteArray)
+
+用提供的公钥 key 加密给定的明文 plaintext。
+
+注意：所接受的明文的最大尺寸受到密钥大小的限制。
+
+
+● PackedByteArray generate_random_bytes(size: int)
+
+生成具有给定大小 size 的加密安全随机字节的 PackedByteArray。
+
+
+● CryptoKey generate_rsa(size: int)
+
+生成可用于创建自签名证书并传递给 StreamPeerTLS.accept_stream() 的 RSA CryptoKey。
+
+
+● X509Certificate generate_self_signed_certificate(key: CryptoKey, issuer_name: String = "CN=myserver,O=myorganisation,C=IT", not_before: String = "20140101000000", not_after: String = "20340101000000")
+
+根据给定的 CryptoKey 和 issuer_name 生成自签名的 X509Certificate。证书有效性将由 not_before 和 not_after（第一个有效日期和最后一个有效日期）定义。issuer_name 必须至少包含“CN=”（通用名称，即域名）、“O=”（组织，即你的公司名称）、“C=”（国家，即 2 个字母的该组织所在的国家/地区的 ISO-3166 代码）。
+
+生成 RSA 密钥和 X509 自签名证书的小示例。
+
+var crypto = Crypto.new()
+# 生成 4096 比特 RSA 密钥。
+var key = crypto.generate_rsa(4096)
+# 使用给定的密钥生成自签名证书。
+var cert = crypto.generate_self_signed_certificate(key, "CN=example.com,O=A Game Company,C=IT") 
+
+
+● PackedByteArray hmac_digest(hash_type: HashingContext.HashType, key: PackedByteArray, msg: PackedByteArray)
+
+使用密钥 key 生成 msg 的 HMAC   摘要。hash_type 参数是用于内部和外部哈希的哈希算法。
+
+目前仅支持 HashingContext.HASH_SHA256 和 HashingContext.HASH_SHA1。
+
+
+● PackedByteArray sign(hash_type: HashingContext.HashType, hash: PackedByteArray, key: CryptoKey)
+
+使用提供的私钥 key 对类型为 hash_type 的给定 hash 进行签名。
+
+
+● bool verify(hash_type: HashingContext.HashType, hash: PackedByteArray, signature: PackedByteArray, key: CryptoKey)
+
+使用提供的公钥 key 验证类型为 hash_type 的给定签名 signature。
+
+类：   CryptoKey
+继承：   Resource <   RefCounted <   Object
+
+加密密钥（RSA 或椭圆曲线）。
+
+描述
+
+CryptoKey 类表示加密密钥。密钥可以像其他任何 Resource 一样进行加载和保存。
+
+密钥可以通过 Crypto.generate_self_signed_certificate() 生成自签名的 X509Certificate，并可作为 StreamPeerTLS.accept_stream() 中相应的证书的私钥。
+
+在线教程
+
+● SSL 证书
+
+方法
+
+boolis_public_only() constErrorload(path: String, public_only: bool = false)Errorload_from_string(string_key: String, public_only: bool = false)Errorsave(path: String, public_only: bool = false)Stringsave_to_string(public_only: bool = false)
+
+
+方法说明
+
+
+● bool is_public_only() const
+
+如果该 CryptoKey 仅具有公钥部分，没有私钥部分，则返回 true。
+
+
+● Error load(path: String, public_only: bool = false)
+
+从路径 path 加载密钥。如果 public_only 为 true，将只加载公钥。
+
+注意：如果 public_only 为 true，则 path 应该是“*.pub”文件，否则是“*.key”文件。
+
+
+● Error load_from_string(string_key: String, public_only: bool = false)
+
+从给定的 string_key 加载密钥。如果 public_only 为 true，则仅会加载公钥。
+
+
+● Error save(path: String, public_only: bool = false)
+
+将密钥保存到给定的路径 path。如果 public_only 为 true，则只会保存公钥。
+
+注意：如果 public_only 为 true，则 path 应该是“*.pub”文件，否则是“*.key”文件。
+
+
+● String save_to_string(public_only: bool = false)
+
+返回包含 PEM 格式的密钥的字符串。如果 public_only 为 true，则仅包含公钥。
+
+类：   AESContext
+继承：   RefCounted <   Object
+
+提供对原始数据的 AES 加密/解密的访问。
+
+描述
+
+这个类存放的是进行 AES（Advanced Encryption Standard，高级加密标准）加解密所需的上下文信息。支持 AES-ECB 和 AES-CBC 两种模式。
+
+extends Node
+
+var aes = AESContext.new()
+
+func _ready():
+	var key = "My secret key!!!" # 密钥必须是 16 或 32 字节。
+	var data = "My secret text!!" # 数据大小必须是 16 字节的倍数，需要时添加补白。
+	# ECB 加密
+	aes.start(AESContext.MODE_ECB_ENCRYPT, key.to_utf8_buffer())
+	var encrypted = aes.update(data.to_utf8_buffer())
+	aes.finish()
+	# ECB 解密
+	aes.start(AESContext.MODE_ECB_DECRYPT, key.to_utf8_buffer())
+	var decrypted = aes.update(encrypted)
+	aes.finish()
+	# ECB 校验
+	assert(decrypted == data.to_utf8_buffer())
+
+	var iv = "My secret iv!!!!" # IV 必须是 16 字节。
+	# CBC 加密
+	aes.start(AESContext.MODE_CBC_ENCRYPT, key.to_utf8_buffer(), iv.to_utf8_buffer())
+	encrypted = aes.update(data.to_utf8_buffer())
+	aes.finish()
+	# CBC 解密
+	aes.start(AESContext.MODE_CBC_DECRYPT, key.to_utf8_buffer(), iv.to_utf8_buffer())
+	decrypted = aes.update(encrypted)
+	aes.finish()
+	# CBC 校验
+	assert(decrypted == data.to_utf8_buffer()) 
+
+方法
+
+voidfinish()PackedByteArrayget_iv_state()Errorstart(mode: Mode, key: PackedByteArray, iv: PackedByteArray = PackedByteArray())PackedByteArrayupdate(src: PackedByteArray)
+
+枚举
+
+enum Mode:
+
+● MODE_ECB_ENCRYPT = 0
+AES 电子密码簿加密模式。
+● MODE_ECB_DECRYPT = 1
+AES 电子密码簿解密模式。
+● MODE_CBC_ENCRYPT = 2
+AES 密码封锁器链式加密模式。
+● MODE_CBC_DECRYPT = 3
+AES 密码封锁器链式解密模式。
+● MODE_MAX = 4
+模式列举的最大值。
+
+
+方法说明
+
+
+● void finish()
+
+关闭此 AES 上下文，以便可以再次启动它。见 start()。
+
+
+● PackedByteArray get_iv_state()
+
+获取此上下文的当前 IV 状态（调用 update() 时会更新 IV）。通常不需要此函数。
+
+注意：仅当上下文以 MODE_CBC_ENCRYPT 或 MODE_CBC_DECRYPT 开头时，此函数才有意义。
+
+
+● Error start(mode: Mode, key: PackedByteArray, iv: PackedByteArray = PackedByteArray())
+
+在给定的 mode 中启动 AES 上下文。必须始终提供 16 或 32 字节的 key，而仅当 mode 为 MODE_CBC_ENCRYPT 或 MODE_CBC_DECRYPT 时，才需要正好为 16 字节的 iv（初始化向量）。
+
+
+● PackedByteArray update(src: PackedByteArray)
+
+运行此 AES 上下文所需的操作。将返回包含加密（或解密）给定 src 结果的 PackedByteArray 。有关操作模式，请参阅 start()。
+
+注意：src 的大小必须是 16 倍的倍数。如果需要，应用一些填充。
+

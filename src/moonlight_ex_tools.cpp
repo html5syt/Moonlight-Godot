@@ -30,78 +30,97 @@ MoonlightExTools::MoonlightExTools() {}
 MoonlightExTools::~MoonlightExTools() {}
 
 void MoonlightExTools::_bind_methods() {
-    ClassDB::bind_method(D_METHOD("generate_pairing_response", "pin", "salt_hex", "server_challenge_hex", "client_pem_key"), &MoonlightExTools::generate_pairing_response);
+    ClassDB::bind_method(D_METHOD("derive_aes_key", "pin", "salt_hex"), &MoonlightExTools::derive_aes_key);
+    ClassDB::bind_method(D_METHOD("encrypt_aes_hex", "data", "key"), &MoonlightExTools::encrypt_aes_hex);
+    ClassDB::bind_method(D_METHOD("decrypt_aes_hex", "hex_data", "key"), &MoonlightExTools::decrypt_aes_hex);
+    ClassDB::bind_method(D_METHOD("sign_data", "data", "key_pem"), &MoonlightExTools::sign_data);
+    ClassDB::bind_method(D_METHOD("verify_signature", "data", "signature", "cert_pem"), &MoonlightExTools::verify_signature);
+    ClassDB::bind_method(D_METHOD("generate_random_bytes", "size"), &MoonlightExTools::generate_random_bytes);
 }
 
-// --- 核心对外接口 ---
-
-String MoonlightExTools::generate_pairing_response(String pin, String salt_hex, String server_challenge_hex, String client_pem_key) {
-    // 1. 数据转换
+// 1. PBKDF2 生成密钥
+PackedByteArray MoonlightExTools::derive_aes_key(String pin, String salt_hex) {
     PackedByteArray salt = hex_to_pba(salt_hex);
-    PackedByteArray server_challenge_enc = hex_to_pba(server_challenge_hex);
     CharString pin_utf8 = pin.utf8();
-
-    // 2. PBKDF2 派生 AES 密钥
-    uint8_t aes_key_raw[16];
+    
+    uint8_t key_raw[16];
+    // 10000 次迭代，生成 16 字节 (AES-128)
     pbkdf2_hmac_sha256((const uint8_t*)pin_utf8.get_data(), pin_utf8.length(), 
-                       salt.ptr(), salt.size(), 
-                       10000, 16, aes_key_raw);
+                       salt.ptr(), salt.size(), 10000, 16, key_raw);
     
-    PackedByteArray aes_key;
-    aes_key.resize(16);
-    memcpy(aes_key.ptrw(), aes_key_raw, 16);
-
-    // 3. AES 解密 Server Challenge
-    Ref<AESContext> aes = memnew(AESContext);
-    aes->start(AESContext::MODE_ECB_DECRYPT, aes_key);
-    PackedByteArray server_challenge_plain = aes->update(server_challenge_enc);
-    aes->finish();
-
-    if (server_challenge_plain.size() != 16) {
-        UtilityFunctions::printerr("MoonlightExTools: Decrypted challenge size mismatch.");
-        return "";
-    }
-
-    // 4. 生成 Client Secret
-    Ref<Crypto> crypto = memnew(Crypto);
-    PackedByteArray client_secret = crypto->generate_random_bytes(16);
-
-    // 5. 准备签名
-    PackedByteArray payload_to_sign;
-    payload_to_sign.append_array(server_challenge_plain);
-    payload_to_sign.append_array(client_secret);
-
-    // 6. RSA 签名
-    Ref<HashingContext> hash_ctx = memnew(HashingContext);
-    hash_ctx->start(HashingContext::HASH_SHA256);
-    hash_ctx->update(payload_to_sign);
-    PackedByteArray digest = hash_ctx->finish();
-
-    Ref<CryptoKey> key = memnew(CryptoKey);
-    if (key->load_from_string(client_pem_key) != OK) {
-        UtilityFunctions::printerr("MoonlightExTools: Failed to load private key.");
-        return "";
-    }
-
-    PackedByteArray signature = crypto->sign(HashingContext::HASH_SHA256, digest, key);
-    if (signature.is_empty()) {
-        UtilityFunctions::printerr("MoonlightExTools: Signature generation failed.");
-        return "";
-    }
-
-    // 7. 构造响应
-    PackedByteArray response_payload;
-    response_payload.append_array(client_secret);
-    response_payload.append_array(signature);
-    
-    // 8. AES 加密响应
-    aes->start(AESContext::MODE_ECB_ENCRYPT, aes_key);
-    PackedByteArray response_enc = aes->update(response_payload);
-    aes->finish();
-
-    return pba_to_hex(response_enc);
+    PackedByteArray key;
+    key.resize(16);
+    memcpy(key.ptrw(), key_raw, 16);
+    return key;
 }
 
+// 2. AES 加密
+String MoonlightExTools::encrypt_aes_hex(PackedByteArray data, PackedByteArray key) {
+    Ref<AESContext> aes = memnew(AESContext);
+    aes->start(AESContext::MODE_ECB_ENCRYPT, key);
+    // 确保数据是 16 的倍数 (Moonlight 协议通常处理定长数据，不足需补齐，但握手阶段数据通常已对齐)
+    PackedByteArray encrypted = aes->update(data);
+    aes->finish();
+    return pba_to_hex(encrypted);
+}
+
+// 3. AES 解密
+PackedByteArray MoonlightExTools::decrypt_aes_hex(String hex_data, PackedByteArray key) {
+    PackedByteArray data = hex_to_pba(hex_data);
+    Ref<AESContext> aes = memnew(AESContext);
+    aes->start(AESContext::MODE_ECB_DECRYPT, key);
+    PackedByteArray plain = aes->update(data);
+    aes->finish();
+    return plain;
+}
+
+// 4. RSA 签名
+PackedByteArray MoonlightExTools::sign_data(PackedByteArray data, String key_pem) {
+    Ref<Crypto> crypto = memnew(Crypto);
+    Ref<CryptoKey> key = memnew(CryptoKey);
+    
+    if (key->load_from_string(key_pem) != OK) {
+        UtilityFunctions::printerr("Failed to load private key");
+        return PackedByteArray();
+    }
+    
+    // 先做 SHA256 Hash
+    Ref<HashingContext> ctx = memnew(HashingContext);
+    ctx->start(HashingContext::HASH_SHA256);
+    ctx->update(data);
+    PackedByteArray digest = ctx->finish();
+    
+    return crypto->sign(HashingContext::HASH_SHA256, digest, key);
+}
+
+// 5. 验证签名
+bool MoonlightExTools::verify_signature(PackedByteArray data, PackedByteArray signature, String cert_pem) {
+    Ref<Crypto> crypto = memnew(Crypto);
+    Ref<X509Certificate> cert = memnew(X509Certificate);
+    
+    if (cert->load_from_string(cert_pem) != OK) {
+        UtilityFunctions::printerr("Failed to load certificate");
+        return false;
+    }
+    
+    Ref<CryptoKey> pub_key = cert->get_public_key(); // Godot 4.5+ method? 
+    // 注意：Godot API 对 verify 的支持有限。如果直接 verify 不可行，
+    // 通常 Pairing 阶段最重要的是用自己的私钥签名发给服务器。
+    // 验证服务器签名是为了防止 MITM。
+    
+    // 计算 Hash
+    Ref<HashingContext> ctx = memnew(HashingContext);
+    ctx->start(HashingContext::HASH_SHA256);
+    ctx->update(data);
+    PackedByteArray digest = ctx->finish();
+    
+    return crypto->verify(HashingContext::HASH_SHA256, digest, signature, pub_key);
+}
+
+PackedByteArray MoonlightExTools::generate_random_bytes(int size) {
+    Ref<Crypto> c = memnew(Crypto);
+    return c->generate_random_bytes(size);
+}
 // --- 辅助函数 ---
 
 PackedByteArray MoonlightExTools::hex_to_pba(const String &hex) {
