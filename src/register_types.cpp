@@ -5,6 +5,7 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
+#include "moonlight_ex_tools.h"
 #include "moonlight_stream.h"
 
 using namespace godot;
@@ -14,6 +15,7 @@ void initialize_gdextension_types(ModuleInitializationLevel p_level)
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
+	GDREGISTER_CLASS(MoonlightExTools);
 	GDREGISTER_CLASS(MoonlightStream);
 }
 

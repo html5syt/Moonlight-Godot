@@ -1,66 +1,46 @@
 #include "moonlight_stream.h"
 
-using namespace godot;
+// Static map for context -> instance (用于音视频回调)
+std::map<void*, MoonlightStream*> MoonlightStream::instance_map;
 
-// ========= 静态全局 =========
+// Global pointer for connection listeners (因为 C 回调不带 context)
+// 注意：这意味着同一时间只能有一个活跃的连接实例，这符合 Moonlight 的典型用法
+static MoonlightStream* global_active_stream = nullptr;
 
-// context -> instance 映射（给视频/音频回调用）
-std::map<void *, MoonlightStream *> MoonlightStream::instance_map;
+// Thread-local storage for current stream instance (per decoder thread)
+thread_local MoonlightStream* tls_current_stream = nullptr;
 
-// 当前激活连接实例（给 ConnectionListener 回调用，因其没有 context）
-static MoonlightStream *global_active_stream = nullptr;
+// ============ YUV420P to RGBA (BT.601) ============
+inline uint8_t clamp(int x) { return static_cast<uint8_t>(x < 0 ? 0 : (x > 255 ? 255 : x)); }
 
-// 每个解码线程自己的当前实例
-thread_local MoonlightStream *tls_current_stream = nullptr;
-
-// ========= 小工具: YUV420P 转 RGBA (BT.601) =========
-static inline uint8_t _clamp_int_to_u8(int x) {
-    if (x < 0) return 0;
-    if (x > 255) return 255;
-    return static_cast<uint8_t>(x);
-}
-
-static void _yuv420p_to_rgba(const uint8_t *y, const uint8_t *u, const uint8_t *v,
-                             uint8_t *rgba, int width, int height) {
-    const int uv_width  = width / 2;
-    const int uv_height = height / 2;
-    (void)uv_height; // 避免未使用警告
-
+void yuv420p_to_rgba(const uint8_t* y, const uint8_t* u, const uint8_t* v, uint8_t* rgba, int width, int height) {
+    int uv_width = width / 2;
+    int uv_height = height / 2;
     for (int yy = 0; yy < height; ++yy) {
         for (int xx = 0; xx < width; ++xx) {
-            const int uv_xx = xx >> 1;
-            const int uv_yy = yy >> 1;
-
-            const int Y = y[yy * width + xx];
-            const int U = u[uv_yy * uv_width + uv_xx] - 128;
-            const int V = v[uv_yy * uv_width + uv_xx] - 128;
-
+            int uv_xx = xx >> 1;
+            int uv_yy = yy >> 1;
+            int Y = y[yy * width + xx];
+            int U = u[uv_yy * uv_width + uv_xx] - 128;
+            int V = v[uv_yy * uv_width + uv_xx] - 128;
             int R = Y + ((359 * V) >> 8);
-            int G = Y - (( 88 * U + 183 * V) >> 8);
+            int G = Y - ((88 * U + 183 * V) >> 8);
             int B = Y + ((454 * U) >> 8);
-
-            const int idx = (yy * width + xx) * 4;
-            rgba[idx + 0] = _clamp_int_to_u8(R);
-            rgba[idx + 1] = _clamp_int_to_u8(G);
-            rgba[idx + 2] = _clamp_int_to_u8(B);
+            int idx = (yy * width + xx) * 4;
+            rgba[idx + 0] = clamp(R);
+            rgba[idx + 1] = clamp(G);
+            rgba[idx + 2] = clamp(B);
             rgba[idx + 3] = 255;
         }
     }
 }
 
-// ========= 静态视频回调 (DecoderRendererCallbacks) =========
-
-// setup(videoFormat, width, height, redrawRate, context, drFlags)
-static int _dr_setup(int video_format, int width, int height,
-                     int redraw_rate, void *context, int dr_flags) {
-    (void)video_format;
-    (void)redraw_rate;
-    (void)dr_flags;
-
+// ============ Video Callbacks (STATIC) ============
+static int dr_setup(int video_format, int width, int height, int redraw_rate, void* context, int dr_flags) {
     auto it = MoonlightStream::instance_map.find(context);
     if (it != MoonlightStream::instance_map.end()) {
         tls_current_stream = it->second;
-        // 在主线程上更新分辨率
+        // 使用 call_deferred 确保在主线程更新 UI 属性
         tls_current_stream->call_deferred("set_resolution", width, height);
     } else {
         tls_current_stream = nullptr;
@@ -68,280 +48,187 @@ static int _dr_setup(int video_format, int width, int height,
     return DR_OK;
 }
 
-static void _dr_cleanup(void) {
+static void dr_cleanup(void) {
     tls_current_stream = nullptr;
 }
 
-// submitDecodeUnit(PDECODE_UNIT du)
-static int _dr_submit_decode_unit(PDECODE_UNIT decode_unit) {
+static int dr_submit_decode_unit(PDECODE_UNIT decode_unit) {
     if (tls_current_stream && tls_current_stream->is_streaming()) {
         return tls_current_stream->_on_submit_decode_unit(decode_unit);
     }
     return DR_OK;
 }
 
-// ========= 静态音频回调 (AudioRendererCallbacks) =========
-
-// init(audioConfiguration, opusConfig, context, arFlags)
-static int _ar_init(int audio_configuration,
-                    const POPUS_MULTISTREAM_CONFIGURATION opus_config,
-                    void *context, int ar_flags) {
-    (void)audio_configuration;
-    (void)opus_config;
-    (void)ar_flags;
-
+// ============ Audio Callbacks (STATIC) ============
+static int ar_init(int audio_configuration, const POPUS_MULTISTREAM_CONFIGURATION opus_config, void* context, int ar_flags) {
     auto it = MoonlightStream::instance_map.find(context);
     if (it == MoonlightStream::instance_map.end()) {
         return -1;
     }
-
-    MoonlightStream *self = it->second;
-
+    MoonlightStream* self = it->second;
+    
+    // 假设 audio_stream 已经在主线程初始化完毕 (在构造函数中)
     if (self->audio_stream.is_valid()) {
+        // instantiate_playback 是线程安全的吗？通常建议在主线程做
+        // 这里为了简化直接调用，如果崩溃需移至 _connection_thread_func 前的主线程逻辑
         self->audio_playback = self->audio_stream->instantiate_playback();
     }
-
     return 0;
 }
 
-// decodeAndPlaySample(sampleData, sampleLength)
-static void _ar_decode_and_play_sample(char *sample_data, int sample_length) {
-    // 因为 AudioRenderer 回调没有 context，这里简单找第一个有 playback 的实例
-    for (auto &pair : MoonlightStream::instance_map) {
-        MoonlightStream *self = pair.second;
-        if (!self || !self->audio_playback.is_valid()) {
-            continue;
+static void ar_decode_and_play_sample(char* sample_data, int sample_length) {
+    for (auto& pair : MoonlightStream::instance_map) {
+        MoonlightStream* self = pair.second;
+        if (self && self->audio_playback.is_valid()) {
+            int sample_count = sample_length / sizeof(int16_t);
+            int frame_count = sample_count / 2;
+            PackedVector2Array buffer;
+            buffer.resize(frame_count);
+            Vector2* write_ptr = buffer.ptrw();
+            int16_t* samples = reinterpret_cast<int16_t*>(sample_data);
+            for (int i = 0; i < frame_count; ++i) {
+                float left = static_cast<float>(samples[i * 2]) / 32768.0f;
+                float right = static_cast<float>(samples[i * 2 + 1]) / 32768.0f;
+                write_ptr[i] = Vector2(left, right);
+            }
+            self->audio_playback->push_buffer(buffer);
+            return;
         }
-
-        const int16_t *samples      = reinterpret_cast<int16_t *>(sample_data);
-        const int      sample_count = sample_length / static_cast<int>(sizeof(int16_t));
-        const int      frame_count  = sample_count / 2; // 双声道
-
-        PackedVector2Array buffer;
-        buffer.resize(frame_count);
-        Vector2 *write_ptr = buffer.ptrw();
-
-        for (int i = 0; i < frame_count; ++i) {
-            const float left  = static_cast<float>(samples[i * 2 + 0]) / 32768.0f;
-            const float right = static_cast<float>(samples[i * 2 + 1]) / 32768.0f;
-            write_ptr[i] = Vector2(left, right);
-        }
-
-        self->audio_playback->push_buffer(buffer);
-        return;
     }
 }
 
-// ========= Godot 绑定 =========
+// ============ Godot Binding ============
 void MoonlightStream::_bind_methods() {
-    // 属性绑定
-    ClassDB::bind_method(D_METHOD("set_host_address", "host"),
-                         &MoonlightStream::set_host_address);
-    ClassDB::bind_method(D_METHOD("get_host_address"),
-                         &MoonlightStream::get_host_address);
+    ClassDB::bind_method(D_METHOD("set_host_address", "host"), &MoonlightStream::set_host_address);
+    ClassDB::bind_method(D_METHOD("get_host_address"), &MoonlightStream::get_host_address);
+    ClassDB::bind_method(D_METHOD("set_app_id", "app_id"), &MoonlightStream::set_app_id);
+    ClassDB::bind_method(D_METHOD("get_app_id"), &MoonlightStream::get_app_id);
+    ClassDB::bind_method(D_METHOD("set_server_app_version", "version"), &MoonlightStream::set_server_app_version);
+    ClassDB::bind_method(D_METHOD("get_server_app_version"), &MoonlightStream::get_server_app_version);
+    ClassDB::bind_method(D_METHOD("set_server_codec_mode_support", "support"), &MoonlightStream::set_server_codec_mode_support);
+    ClassDB::bind_method(D_METHOD("get_server_codec_mode_support"), &MoonlightStream::get_server_codec_mode_support);
+    ClassDB::bind_method(D_METHOD("set_server_rtsp_session_url", "url"), &MoonlightStream::set_server_rtsp_session_url);
+    ClassDB::bind_method(D_METHOD("get_server_rtsp_session_url"), &MoonlightStream::get_server_rtsp_session_url);
+    ClassDB::bind_method(D_METHOD("set_resolution", "width", "height"), &MoonlightStream::set_resolution);
+    ClassDB::bind_method(D_METHOD("get_resolution"), &MoonlightStream::get_resolution);
+    ClassDB::bind_method(D_METHOD("set_fps", "fps"), &MoonlightStream::set_fps);
+    ClassDB::bind_method(D_METHOD("get_fps"), &MoonlightStream::get_fps);
+    ClassDB::bind_method(D_METHOD("set_bitrate_kbps", "bitrate_kbps"), &MoonlightStream::set_bitrate_kbps);
+    ClassDB::bind_method(D_METHOD("get_bitrate_kbps"), &MoonlightStream::get_bitrate_kbps);
+    ClassDB::bind_method(D_METHOD("set_video_codec", "codec"), &MoonlightStream::set_video_codec);
+    ClassDB::bind_method(D_METHOD("get_video_codec"), &MoonlightStream::get_video_codec);
+    ClassDB::bind_method(D_METHOD("set_color_space", "color_space"), &MoonlightStream::set_color_space);
+    ClassDB::bind_method(D_METHOD("get_color_space"), &MoonlightStream::get_color_space);
+    ClassDB::bind_method(D_METHOD("set_enable_hdr", "enable"), &MoonlightStream::set_enable_hdr);
+    ClassDB::bind_method(D_METHOD("get_enable_hdr"), &MoonlightStream::get_enable_hdr);
+    ClassDB::bind_method(D_METHOD("get_audio_stream"), &MoonlightStream::get_audio_stream);
+    
+    ClassDB::bind_method(D_METHOD("start_connection"), &MoonlightStream::start_connection);
+    ClassDB::bind_method(D_METHOD("stop_connection"), &MoonlightStream::stop_connection);
+    
+    ClassDB::bind_method(D_METHOD("send_mouse_button_event", "button", "pressed"), &MoonlightStream::send_mouse_button_event);
+    ClassDB::bind_method(D_METHOD("send_mouse_move_event", "x", "y"), &MoonlightStream::send_mouse_move_event);
+    ClassDB::bind_method(D_METHOD("send_key_event", "scancode", "pressed"), &MoonlightStream::send_key_event);
+    ClassDB::bind_method(D_METHOD("set_remote_input_aes_key", "key"), &MoonlightStream::set_remote_input_aes_key);
+    ClassDB::bind_method(D_METHOD("set_remote_input_aes_iv", "iv"), &MoonlightStream::set_remote_input_aes_iv);
 
-    ClassDB::bind_method(D_METHOD("set_app_id", "app_id"),
-                         &MoonlightStream::set_app_id);
-    ClassDB::bind_method(D_METHOD("get_app_id"),
-                         &MoonlightStream::get_app_id);
+    ADD_PROPERTY(PropertyInfo(Variant::STRING, "host_address"), "set_host_address", "get_host_address");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "app_id"), "set_app_id", "get_app_id");
+    ADD_PROPERTY(PropertyInfo(Variant::STRING, "server_app_version"), "set_server_app_version", "get_server_app_version");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "server_codec_mode_support"), "set_server_codec_mode_support", "get_server_codec_mode_support");
+    ADD_PROPERTY(PropertyInfo(Variant::STRING, "server_rtsp_session_url"), "set_server_rtsp_session_url", "get_server_rtsp_session_url");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "fps", PROPERTY_HINT_RANGE, "10,120,1"), "set_fps", "get_fps");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "bitrate_kbps", PROPERTY_HINT_RANGE, "500,100000,1"), "set_bitrate_kbps", "get_bitrate_kbps");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "video_codec", PROPERTY_HINT_ENUM, "H264,HEVC,AV1"), "set_video_codec", "get_video_codec");
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "color_space", PROPERTY_HINT_ENUM, "Rec601,Rec709,Rec2020"), "set_color_space", "get_color_space");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "enable_hdr"), "set_enable_hdr", "get_enable_hdr");
 
-    ClassDB::bind_method(D_METHOD("set_server_app_version", "version"),
-                         &MoonlightStream::set_server_app_version);
-    ClassDB::bind_method(D_METHOD("get_server_app_version"),
-                         &MoonlightStream::get_server_app_version);
-
-    ClassDB::bind_method(D_METHOD("set_server_codec_mode_support", "support"),
-                         &MoonlightStream::set_server_codec_mode_support);
-    ClassDB::bind_method(D_METHOD("get_server_codec_mode_support"),
-                         &MoonlightStream::get_server_codec_mode_support);
-
-    ClassDB::bind_method(D_METHOD("set_server_rtsp_session_url", "url"),
-                         &MoonlightStream::set_server_rtsp_session_url);
-    ClassDB::bind_method(D_METHOD("get_server_rtsp_session_url"),
-                         &MoonlightStream::get_server_rtsp_session_url);
-
-    ClassDB::bind_method(D_METHOD("set_resolution", "width", "height"),
-                         &MoonlightStream::set_resolution);
-    ClassDB::bind_method(D_METHOD("get_resolution"),
-                         &MoonlightStream::get_resolution);
-
-    ClassDB::bind_method(D_METHOD("set_fps", "fps"),
-                         &MoonlightStream::set_fps);
-    ClassDB::bind_method(D_METHOD("get_fps"),
-                         &MoonlightStream::get_fps);
-
-    ClassDB::bind_method(D_METHOD("set_bitrate_kbps", "bitrate_kbps"),
-                         &MoonlightStream::set_bitrate_kbps);
-    ClassDB::bind_method(D_METHOD("get_bitrate_kbps"),
-                         &MoonlightStream::get_bitrate_kbps);
-
-    ClassDB::bind_method(D_METHOD("set_video_codec", "codec"),
-                         &MoonlightStream::set_video_codec);
-    ClassDB::bind_method(D_METHOD("get_video_codec"),
-                         &MoonlightStream::get_video_codec);
-
-    ClassDB::bind_method(D_METHOD("set_color_space", "color_space"),
-                         &MoonlightStream::set_color_space);
-    ClassDB::bind_method(D_METHOD("get_color_space"),
-                         &MoonlightStream::get_color_space);
-
-    ClassDB::bind_method(D_METHOD("set_enable_hdr", "enable"),
-                         &MoonlightStream::set_enable_hdr);
-    ClassDB::bind_method(D_METHOD("get_enable_hdr"),
-                         &MoonlightStream::get_enable_hdr);
-
-    ClassDB::bind_method(D_METHOD("get_audio_stream"),
-                         &MoonlightStream::get_audio_stream);
-
-    // 控制
-    ClassDB::bind_method(D_METHOD("start_connection"),
-                         &MoonlightStream::start_connection);
-    ClassDB::bind_method(D_METHOD("stop_connection"),
-                         &MoonlightStream::stop_connection);
-
-    // 输入
-    ClassDB::bind_method(D_METHOD("send_mouse_button_event", "button", "pressed"),
-                         &MoonlightStream::send_mouse_button_event);
-    ClassDB::bind_method(D_METHOD("send_mouse_move_event", "x", "y"),
-                         &MoonlightStream::send_mouse_move_event);
-    ClassDB::bind_method(D_METHOD("send_key_event", "scancode", "pressed"),
-                         &MoonlightStream::send_key_event);
-
-    // AES key/iv
-    ClassDB::bind_method(D_METHOD("set_remote_input_aes_key", "key"),
-                         &MoonlightStream::set_remote_input_aes_key);
-    ClassDB::bind_method(D_METHOD("set_remote_input_aes_iv", "iv"),
-                         &MoonlightStream::set_remote_input_aes_iv);
-
-    // 属性导出到 Inspector
-    ADD_PROPERTY(PropertyInfo(Variant::STRING, "host_address"),
-                 "set_host_address", "get_host_address");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "app_id"),
-                 "set_app_id", "get_app_id");
-    ADD_PROPERTY(PropertyInfo(Variant::STRING, "server_app_version"),
-                 "set_server_app_version", "get_server_app_version");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "server_codec_mode_support"),
-                 "set_server_codec_mode_support", "get_server_codec_mode_support");
-    ADD_PROPERTY(PropertyInfo(Variant::STRING, "server_rtsp_session_url"),
-                 "set_server_rtsp_session_url", "get_server_rtsp_session_url");
-
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "fps",
-                              PROPERTY_HINT_RANGE, "10,120,1"),
-                 "set_fps", "get_fps");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "bitrate_kbps",
-                              PROPERTY_HINT_RANGE, "500,100000,1"),
-                 "set_bitrate_kbps", "get_bitrate_kbps");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "video_codec",
-                              PROPERTY_HINT_ENUM, "H264,HEVC,AV1"),
-                 "set_video_codec", "get_video_codec");
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "color_space",
-                              PROPERTY_HINT_ENUM, "Rec601,Rec709,Rec2020"),
-                 "set_color_space", "get_color_space");
-    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "enable_hdr"),
-                 "set_enable_hdr", "get_enable_hdr");
-
-    // 枚举导出
     BIND_ENUM_CONSTANT(CODEC_H264);
     BIND_ENUM_CONSTANT(CODEC_HEVC);
     BIND_ENUM_CONSTANT(CODEC_AV1);
-
     BIND_ENUM_CONSTANT(COLOR_SPACE_REC_601);
     BIND_ENUM_CONSTANT(COLOR_SPACE_REC_709);
     BIND_ENUM_CONSTANT(COLOR_SPACE_REC_2020);
 
-    // 信号
+    // === 注册信号 ===
     ADD_SIGNAL(MethodInfo("connection_started"));
-    ADD_SIGNAL(MethodInfo("connection_terminated",
-                          PropertyInfo(Variant::INT, "error_code")));
-    ADD_SIGNAL(MethodInfo("connection_failed",
-                          PropertyInfo(Variant::STRING, "message")));
+    ADD_SIGNAL(MethodInfo("connection_terminated", PropertyInfo(Variant::INT, "error_code")));
+    ADD_SIGNAL(MethodInfo("connection_failed", PropertyInfo(Variant::STRING, "message")));
 }
 
-// ========= 构造 / 析构 =========
+// ============ Lifecycle ============
 MoonlightStream::MoonlightStream() {
-    void *ctx = this;
-    instance_map[ctx] = this;
-
-    // Audio generator
+    void* render_context = this;
+    instance_map[render_context] = this;
+    
+    // 在主线程提前初始化 AudioStream，避免在回调线程中创建对象的风险
     audio_stream.instantiate();
-    audio_stream->set_mix_rate(48000); // Moonlight 默认 48k
+    audio_stream->set_mix_rate(48000);
 
-    // 创建 SubViewport 作为视频输出
     viewport = memnew(SubViewport);
-    viewport->set_name("MoonlightVideoViewport");
+    viewport->set_name("VideoViewport");
     viewport->set_size(Size2i(width, height));
     viewport->set_disable_3d(true);
     viewport->set_clear_mode(SubViewport::CLEAR_MODE_ALWAYS);
     viewport->set_transparent_background(false);
     viewport->set_update_mode(SubViewport::UPDATE_ALWAYS);
     add_child(viewport);
-
-    texture_rid = RenderingServer::get_singleton()->viewport_get_texture(
-        viewport->get_viewport_rid());
-
-    // 启用 _process
-    set_process(true);
+    texture_rid = RenderingServer::get_singleton()->viewport_get_texture(viewport->get_viewport_rid());
 }
 
 MoonlightStream::~MoonlightStream() {
-    // 从映射中移除
     instance_map.erase(this);
-
-    // 停止连接并等待线程退出
-    stop_connection();
-
+    
+    // 如果是当前全局流，清除指针
     if (global_active_stream == this) {
         global_active_stream = nullptr;
     }
 
+    stop_connection(); // 确保线程 join
+    
     if (viewport) {
         viewport->queue_free();
         viewport = nullptr;
     }
 }
 
-// ========= 属性 =========
 void MoonlightStream::set_resolution(int p_width, int p_height) {
-    width  = p_width;
+    width = p_width;
     height = p_height;
     if (viewport) {
         viewport->set_size(Size2i(width, height));
     }
 }
 
-// ========= 连接控制 =========
+// ============ Connection Control ============
+
 void MoonlightStream::start_connection() {
+    // 检查是否已在运行
     if (streaming.load()) {
         UtilityFunctions::push_warning("MoonlightStream: Already streaming.");
         return;
     }
-
-    // 上一次线程若仍存在，先 join
+    
+    // 如果之前的线程还没彻底退出，等待它
     if (connection_thread.joinable()) {
         connection_thread.join();
     }
 
-    // 配置合法性检查
-    if (host_address.is_empty()) {
-        emit_signal("connection_failed", String("Host address is empty"));
+    // === 参数校验 ===
+    if (custom_aes_key.is_empty() || custom_aes_key.size() != 16) {
+        emit_signal("connection_failed", "Invalid AES Key (must be 16 bytes)");
         return;
     }
-
-    if (custom_aes_key.size() != 16) {
-        emit_signal("connection_failed", String("Invalid AES key (must be 16 bytes)"));
+    if (custom_aes_iv.is_empty() || custom_aes_iv.size() < 4) {
+        emit_signal("connection_failed", "Invalid AES IV (must be >= 4 bytes)");
         return;
     }
-
-    if (custom_aes_iv.size() < 4) {
-        emit_signal("connection_failed", String("Invalid AES IV (must be >= 4 bytes)"));
-        return;
-    }
-
     if (server_app_version.is_empty()) {
-        emit_signal("connection_failed", String("Server app version is not set"));
+        emit_signal("connection_failed", "Server App Version not set");
         return;
     }
 
+    // 设置全局活跃流指针 (供 C 回调使用)
     global_active_stream = this;
     streaming.store(true);
 
@@ -350,247 +237,201 @@ void MoonlightStream::start_connection() {
 }
 
 void MoonlightStream::_connection_thread_func() {
-    // --- SERVER_INFORMATION ---
-    SERVER_INFORMATION server_info;
-    LiInitializeServerInformation(&server_info);
-
-    CharString host_str    = host_address.utf8();
+    // 在线程栈上准备数据，保证 LiStartConnection 执行期间数据有效
+    CharString host_str = host_address.utf8();
     CharString app_ver_str = server_app_version.utf8();
-    CharString rtsp_str    = server_rtsp_session_url.utf8();
+    CharString rtsp_url_str = server_rtsp_session_url.utf8();
 
-    server_info.address            = host_str.get_data();
+    SERVER_INFORMATION server_info = {};
+    server_info.address = host_str.get_data();
     server_info.serverInfoAppVersion = app_ver_str.get_data();
-    server_info.serverInfoGfeVersion  = nullptr; // 可选字段
-    server_info.rtspSessionUrl       = server_rtsp_session_url.is_empty()
-                                        ? nullptr
-                                        : rtsp_str.get_data();
     server_info.serverCodecModeSupport = server_codec_mode_support;
+    if (!server_rtsp_session_url.is_empty()) {
+        server_info.rtspSessionUrl = rtsp_url_str.get_data();
+    } else {
+        server_info.rtspSessionUrl = nullptr;
+    }
 
-    // --- STREAM_CONFIGURATION ---
-    STREAM_CONFIGURATION stream_cfg;
-    LiInitializeStreamConfiguration(&stream_cfg);
+    STREAM_CONFIGURATION stream_config = {};
+    stream_config.width = width;
+    stream_config.height = height;
+    stream_config.fps = fps;
+    stream_config.bitrate = bitrate_kbps;
+    stream_config.packetSize = 1392;
+    stream_config.streamingRemotely = STREAM_CFG_LOCAL;
+    stream_config.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
+    stream_config.supportedVideoFormats = static_cast<int>(video_codec);
+    stream_config.colorSpace = static_cast<int>(color_space);
+    stream_config.colorRange = enable_hdr ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
 
-    stream_cfg.width               = width;
-    stream_cfg.height              = height;
-    stream_cfg.fps                 = fps;
-    stream_cfg.bitrate             = bitrate_kbps;
-    stream_cfg.packetSize          = 1392; // 常见值，避免 MTU 问题
-    stream_cfg.streamingRemotely   = STREAM_CFG_LOCAL;
-    stream_cfg.audioConfiguration  = AUDIO_CONFIGURATION_STEREO;
-    stream_cfg.supportedVideoFormats = static_cast<int>(video_codec);
-    stream_cfg.clientRefreshRateX100 = 0; // 不指定
-    stream_cfg.colorSpace          = static_cast<int>(color_space);
-    stream_cfg.colorRange          = enable_hdr ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
-    stream_cfg.encryptionFlags     = ENCFLG_ALL;
+    // 填充 AES 密钥
+    memcpy(stream_config.remoteInputAesKey, custom_aes_key.ptr(), 16);
+    memcpy(stream_config.remoteInputAesIv, custom_aes_iv.ptr(), 4);
+    memset(stream_config.remoteInputAesIv + 4, 0, 12);
 
-    // 远程输入 AES 密钥
-    std::memset(stream_cfg.remoteInputAesKey, 0, sizeof(stream_cfg.remoteInputAesKey));
-    std::memset(stream_cfg.remoteInputAesIv,  0, sizeof(stream_cfg.remoteInputAesIv));
+    // 准备回调
+    DECODER_RENDERER_CALLBACKS dr_callbacks = {};
+    dr_callbacks.setup = dr_setup;
+    dr_callbacks.submitDecodeUnit = dr_submit_decode_unit;
+    dr_callbacks.cleanup = dr_cleanup;
+    dr_callbacks.capabilities = CAPABILITY_DIRECT_SUBMIT;
 
-    std::memcpy(stream_cfg.remoteInputAesKey, custom_aes_key.ptr(), 16);
-    std::memcpy(stream_cfg.remoteInputAesIv,  custom_aes_iv.ptr(), 4);
-    // 后 12 字节保持 0
+    AUDIO_RENDERER_CALLBACKS ar_callbacks = {};
+    ar_callbacks.init = ar_init;
+    ar_callbacks.decodeAndPlaySample = ar_decode_and_play_sample;
+    ar_callbacks.capabilities = CAPABILITY_DIRECT_SUBMIT;
 
-    // --- 视频回调 ---
-    DECODER_RENDERER_CALLBACKS dr_cb;
-    LiInitializeVideoCallbacks(&dr_cb);
-    dr_cb.setup            = _dr_setup;
-    dr_cb.cleanup          = _dr_cleanup;
-    dr_cb.submitDecodeUnit = _dr_submit_decode_unit;
-    dr_cb.capabilities     = CAPABILITY_DIRECT_SUBMIT;
-
-    // --- 音频回调 ---
-    AUDIO_RENDERER_CALLBACKS ar_cb;
-    LiInitializeAudioCallbacks(&ar_cb);
-    ar_cb.init                 = _ar_init;
-    ar_cb.decodeAndPlaySample  = _ar_decode_and_play_sample;
-    ar_cb.capabilities         = CAPABILITY_DIRECT_SUBMIT;
-
-    // --- 连接监听 ---
-    CONNECTION_LISTENER_CALLBACKS cl_cb;
-    LiInitializeConnectionCallbacks(&cl_cb);
-
-    cl_cb.stageStarting = [](int stage) {
-        UtilityFunctions::print("Moonlight stage starting: ", stage);
+    CONNECTION_LISTENER_CALLBACKS cl_callbacks = {};
+    // 由于 C 回调签名不带 context，我们使用 lambda 并访问全局静态指针
+    cl_callbacks.stageStarting = [](int stage) { 
+        UtilityFunctions::print("Moonlight Stage Starting: ", stage); 
     };
-    cl_cb.stageFailed = [](int stage, int error) {
-        UtilityFunctions::push_warning(
-            vformat("Moonlight stage %d failed: %d", stage, error));
+    cl_callbacks.stageFailed = [](int stage, int error) {
+        UtilityFunctions::push_warning(vformat("Moonlight Stage %d Failed: %d", stage, error));
     };
-    cl_cb.connectionStarted = []() {
-        UtilityFunctions::print("Moonlight connection started.");
+    cl_callbacks.connectionStarted = []() {
+        UtilityFunctions::print("Moonlight Connection Started!");
         if (global_active_stream) {
             global_active_stream->_emit_connection_started();
         }
     };
-    cl_cb.connectionTerminated = [](int error) {
-        UtilityFunctions::print("Moonlight connection terminated: ", error);
-        if (global_active_stream) {
-            // 在线程结束时，通过 call_deferred 统一发信号
-            global_active_stream->call_deferred("_emit_connection_terminated", error);
-        }
+    cl_callbacks.connectionTerminated = [](int error) {
+        UtilityFunctions::print("Moonlight Connection Terminated: ", error);
+        // 此时 LiStartConnection 可能还没返回，我们在线程结束处统一发信号
     };
-    // 其他回调保持 NULL
+    // Log 也可以加，看需求
 
-    void *render_ctx = this;
-    void *audio_ctx  = this;
-
-    // 阻塞直到连接结束
+    void* render_context = this; // 传给 video/audio callback 的 context
+    
+    // === 阻塞调用 ===
     int ret = LiStartConnection(
         &server_info,
-        &stream_cfg,
-        &cl_cb,
-        &dr_cb,
-        &ar_cb,
-        render_ctx,
-        0,           // drFlags
-        audio_ctx,
-        0            // arFlags
+        &stream_config,
+        &cl_callbacks,
+        &dr_callbacks,
+        &ar_callbacks,
+        render_context,
+        0,
+        render_context, // Audio context
+        0
     );
 
+    // 连接结束
     streaming.store(false);
     if (global_active_stream == this) {
         global_active_stream = nullptr;
     }
 
-    // 若 connectionTerminated 没被调用（比如早期阶段失败），在这里补一次
+    // 通知主线程连接已结束
     call_deferred("_emit_connection_terminated", ret);
 }
 
 void MoonlightStream::stop_connection() {
-    // 1. 发送停止请求
+    // 1. 发出停止指令，打破阻塞
     if (streaming.load()) {
         LiStopConnection();
     }
 
-    // 2. 等待线程结束
+    // 2. 等待线程完全退出
     if (connection_thread.joinable()) {
         connection_thread.join();
     }
-
+    
+    // 3. 状态清理
     streaming.store(false);
-
     if (global_active_stream == this) {
         global_active_stream = nullptr;
     }
 }
 
-// ========= 信号中转 =========
+// ============ Signal Helpers (run on Main Thread via call_deferred) ============
 void MoonlightStream::_emit_connection_started() {
-    // 直接在主线程 emit，如果是从回调来的，用 call_deferred 调用这个函数
-    emit_signal("connection_started");
+    // 再次通过 call_deferred 确保万无一失（虽然从 lambda 调过来已经是 deferred）
+    call_deferred("emit_signal", "connection_started");
 }
 
 void MoonlightStream::_emit_connection_terminated(int error_code) {
-    emit_signal("connection_terminated", error_code);
+    call_deferred("emit_signal", "connection_terminated", error_code);
 }
 
-// ========= 解码帧提交 (视频回调线程) =========
+// ============ Frame Rendering ============
 int MoonlightStream::_on_submit_decode_unit(PDECODE_UNIT decode_unit) {
     if (!streaming.load() || width <= 0 || height <= 0 || (width & 1) || (height & 1)) {
         return DR_OK;
     }
 
-    const size_t y_size  = static_cast<size_t>(width) * static_cast<size_t>(height);
-    const size_t uv_size = (static_cast<size_t>(width) / 2) * (static_cast<size_t>(height) / 2);
-    const size_t total_expected = y_size + uv_size * 2;
-
-    std::unique_ptr<uint8_t[]> full_buffer(new uint8_t[total_expected]);
+    size_t y_size = width * height;
+    size_t uv_size = (width / 2) * (height / 2);
+    size_t total_expected = y_size + uv_size * 2;
+    uint8_t* full_buffer = new uint8_t[total_expected];
     size_t offset = 0;
-
     PLENTRY entry = decode_unit->bufferList;
     while (entry && offset < total_expected) {
-        const size_t len = std::min<size_t>(entry->length,
-                                            total_expected - offset);
-        std::memcpy(full_buffer.get() + offset, entry->data, len);
-        offset += len;
+        size_t len = (offset + entry->length <= total_expected) ? entry->length : (total_expected - offset);
+        std::memcpy(full_buffer + offset, entry->data, len);
+        offset += entry->length;
         entry = entry->next;
     }
 
     if (offset < total_expected) {
-        // 数据不完整，丢帧
+        delete[] full_buffer;
         return DR_OK;
     }
 
-    const uint8_t *y = full_buffer.get();
-    const uint8_t *u = full_buffer.get() + y_size;
-    const uint8_t *v = full_buffer.get() + y_size + uv_size;
+    const uint8_t* y = full_buffer;
+    const uint8_t* u = full_buffer + y_size;
+    const uint8_t* v = full_buffer + y_size + uv_size;
+    size_t rgba_size = width * height * 4;
+    uint8_t* rgba = new uint8_t[rgba_size];
+    yuv420p_to_rgba(y, u, v, rgba, width, height);
 
-    const size_t rgba_size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
-    std::unique_ptr<uint8_t[]> rgba(new uint8_t[rgba_size]);
-
-    _yuv420p_to_rgba(y, u, v, rgba.get(), width, height);
-
-    PackedByteArray frame;
-    frame.resize(rgba_size);
-    std::memcpy(frame.ptrw(), rgba.get(), rgba_size);
+    PackedByteArray image_data;
+    image_data.resize(rgba_size);
+    memcpy(image_data.ptrw(), rgba, rgba_size);
 
     {
         std::lock_guard<std::mutex> lock(frame_mutex);
-        pending_frame    = frame;
+        pending_frame = image_data;
         has_pending_frame = true;
     }
 
+    delete[] rgba;
+    delete[] full_buffer;
     return DR_OK;
 }
 
-// ========= 主线程处理：上传纹理 =========
+// ============ Main Thread Process ============
 void MoonlightStream::_process(double delta) {
-    (void)delta;
-
     PackedByteArray frame;
-    bool            update = false;
-
+    bool update = false;
     {
         std::lock_guard<std::mutex> lock(frame_mutex);
         if (has_pending_frame) {
-            frame           = pending_frame;
+            frame = pending_frame;
             has_pending_frame = false;
-            update          = true;
+            update = true;
         }
     }
 
-    if (!update || frame.is_empty() || width <= 0 || height <= 0) {
-        return;
+    if (update) {
+        Ref<Image> image = Image::create_from_data(width, height, false, Image::FORMAT_RGBA8, frame);
+        RenderingServer::get_singleton()->texture_2d_update(texture_rid, image, 0);
     }
-
-    Ref<Image> img = Image::create_from_data(
-        width, height, false, Image::FORMAT_RGBA8, frame);
-
-    RenderingServer::get_singleton()->texture_2d_update(texture_rid, img, 0);
 }
 
-// ========= 输入事件 =========
+// ============ Input ============
 void MoonlightStream::send_mouse_button_event(int button, bool pressed) {
-    if (!streaming.load()) {
-        return;
-    }
-
-    LiSendMouseButtonEvent(
-        pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE,
-        button);
+    if (streaming.load()) LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, button);
 }
 
 void MoonlightStream::send_mouse_move_event(float x, float y) {
-    if (!streaming.load()) {
-        return;
-    }
-
-    LiSendMouseMoveEvent(static_cast<short>(x), static_cast<short>(y));
+    if (streaming.load()) LiSendMouseMoveEvent(static_cast<short>(x), static_cast<short>(y));
 }
 
 void MoonlightStream::send_key_event(int scancode, bool pressed) {
-    if (!streaming.load()) {
-        return;
-    }
-
-    LiSendKeyboardEvent(
-        static_cast<short>(scancode),
-        pressed ? KEY_ACTION_DOWN : KEY_ACTION_UP,
-        0);
+    if (streaming.load()) LiSendKeyboardEvent(static_cast<short>(scancode), pressed ? KEY_ACTION_DOWN : KEY_ACTION_UP, 0);
 }
 
-// ========= 远程输入 AES =========
 void MoonlightStream::set_remote_input_aes_key(const PackedByteArray &p_key) {
     custom_aes_key = p_key;
 }
