@@ -13,6 +13,40 @@ static MoonlightStream *global_active_stream = nullptr;
 // 每个解码线程自己的当前实例
 thread_local MoonlightStream *tls_current_stream = nullptr;
 
+// ========= 小工具: YUV420P 转 RGBA (BT.601) =========
+static inline uint8_t _clamp_int_to_u8(int x) {
+    if (x < 0) return 0;
+    if (x > 255) return 255;
+    return static_cast<uint8_t>(x);
+}
+
+static void _yuv420p_to_rgba(const uint8_t *y, const uint8_t *u, const uint8_t *v,
+                             uint8_t *rgba, int width, int height) {
+    const int uv_width  = width / 2;
+    const int uv_height = height / 2;
+    (void)uv_height; // 避免未使用警告
+
+    for (int yy = 0; yy < height; ++yy) {
+        for (int xx = 0; xx < width; ++xx) {
+            const int uv_xx = xx >> 1;
+            const int uv_yy = yy >> 1;
+
+            const int Y = y[yy * width + xx];
+            const int U = u[uv_yy * uv_width + uv_xx] - 128;
+            const int V = v[uv_yy * uv_width + uv_xx] - 128;
+
+            int R = Y + ((359 * V) >> 8);
+            int G = Y - (( 88 * U + 183 * V) >> 8);
+            int B = Y + ((454 * U) >> 8);
+
+            const int idx = (yy * width + xx) * 4;
+            rgba[idx + 0] = _clamp_int_to_u8(R);
+            rgba[idx + 1] = _clamp_int_to_u8(G);
+            rgba[idx + 2] = _clamp_int_to_u8(B);
+            rgba[idx + 3] = 255;
+        }
+    }
+}
 
 // ========= 静态视频回调 (DecoderRendererCallbacks) =========
 
@@ -221,9 +255,6 @@ void MoonlightStream::_bind_methods() {
                           PropertyInfo(Variant::INT, "error_code")));
     ADD_SIGNAL(MethodInfo("connection_failed",
                           PropertyInfo(Variant::STRING, "message")));
-    ADD_SIGNAL(MethodInfo("video_packet_received", 
-        PropertyInfo(Variant::PACKED_BYTE_ARRAY, "data"),
-        PropertyInfo(Variant::INT, "frame_type")));
 }
 
 // ========= 构造 / 析构 =========
@@ -235,13 +266,37 @@ MoonlightStream::MoonlightStream() {
     audio_stream.instantiate();
     audio_stream->set_mix_rate(48000); // Moonlight 默认 48k
 
+    // 创建 SubViewport 作为视频输出
+    viewport = memnew(SubViewport);
+    viewport->set_name("MoonlightVideoViewport");
+    viewport->set_size(Size2i(width, height));
+    viewport->set_disable_3d(true);
+    viewport->set_clear_mode(SubViewport::CLEAR_MODE_ALWAYS);
+    viewport->set_transparent_background(false);
+    viewport->set_update_mode(SubViewport::UPDATE_ALWAYS);
+    add_child(viewport);
+
+    texture_rid = RenderingServer::get_singleton()->viewport_get_texture(
+        viewport->get_viewport_rid());
+
+    // 启用 _process
+    set_process(true);
 }
 
 MoonlightStream::~MoonlightStream() {
+    // 从映射中移除
     instance_map.erase(this);
+
+    // 停止连接并等待线程退出
     stop_connection();
+
     if (global_active_stream == this) {
         global_active_stream = nullptr;
+    }
+
+    if (viewport) {
+        viewport->queue_free();
+        viewport = nullptr;
     }
 }
 
@@ -249,6 +304,9 @@ MoonlightStream::~MoonlightStream() {
 void MoonlightStream::set_resolution(int p_width, int p_height) {
     width  = p_width;
     height = p_height;
+    if (viewport) {
+        viewport->set_size(Size2i(width, height));
+    }
 }
 
 // ========= 连接控制 =========
@@ -429,50 +487,78 @@ void MoonlightStream::_emit_connection_terminated(int error_code) {
 
 // ========= 解码帧提交 (视频回调线程) =========
 int MoonlightStream::_on_submit_decode_unit(PDECODE_UNIT decode_unit) {
-    if (!streaming.load()) {
+    if (!streaming.load() || width <= 0 || height <= 0 || (width & 1) || (height & 1)) {
         return DR_OK;
     }
 
-    // 1. 计算总数据长度
-    int total_len = decode_unit->fullLength;
-    if (total_len <= 0) return DR_OK;
+    const size_t y_size  = static_cast<size_t>(width) * static_cast<size_t>(height);
+    const size_t uv_size = (static_cast<size_t>(width) / 2) * (static_cast<size_t>(height) / 2);
+    const size_t total_expected = y_size + uv_size * 2;
 
-    // 2. 准备 PackedByteArray
-    PackedByteArray packet_data;
-    packet_data.resize(total_len);
-    uint8_t *ptr = packet_data.ptrw();
+    std::unique_ptr<uint8_t[]> full_buffer(new uint8_t[total_expected]);
+    size_t offset = 0;
 
-    // 3. 拼接 buffer 链表
-    // Limelight 将一帧数据拆分成了多个链表节点，我们需要把它们拼成一个完整的 H.264/HEVC 帧
     PLENTRY entry = decode_unit->bufferList;
-    int offset = 0;
-    while (entry != nullptr) {
-        if (entry->length > 0 && entry->data != nullptr) {
-            // 安全检查防止溢出
-            if (offset + entry->length <= total_len) {
-                std::memcpy(ptr + offset, entry->data, entry->length);
-                offset += entry->length;
-            }
-        }
+    while (entry && offset < total_expected) {
+        const size_t len = std::min<size_t>(entry->length,
+                                            total_expected - offset);
+        std::memcpy(full_buffer.get() + offset, entry->data, len);
+        offset += len;
         entry = entry->next;
     }
 
-    // 4. 发送信号到 C#
-    // 注意：这个函数是在解码线程调用的。
-    // Godot 4.x 的 emit_signal 在多线程环境下通常是线程安全的，它会将信号放入主线程队列。
-    // 如果遇到问题，可以使用 call_deferred("_emit_video_packet", ...)
-    
-    // 这里为了性能，尽量直接 emit，让 C# 端决定是否在线程池处理
-    call_deferred("_emit_video_packet", packet_data, decode_unit->frameType);
+    if (offset < total_expected) {
+        // 数据不完整，丢帧
+        return DR_OK;
+    }
+
+    const uint8_t *y = full_buffer.get();
+    const uint8_t *u = full_buffer.get() + y_size;
+    const uint8_t *v = full_buffer.get() + y_size + uv_size;
+
+    const size_t rgba_size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    std::unique_ptr<uint8_t[]> rgba(new uint8_t[rgba_size]);
+
+    _yuv420p_to_rgba(y, u, v, rgba.get(), width, height);
+
+    PackedByteArray frame;
+    frame.resize(rgba_size);
+    std::memcpy(frame.ptrw(), rgba.get(), rgba_size);
+
+    {
+        std::lock_guard<std::mutex> lock(frame_mutex);
+        pending_frame    = frame;
+        has_pending_frame = true;
+    }
 
     return DR_OK;
 }
 
-void MoonlightStream::_emit_video_packet(const PackedByteArray &data, int frame_type) {
-    emit_signal("video_packet_received", data, frame_type);
+// ========= 主线程处理：上传纹理 =========
+void MoonlightStream::_process(double delta) {
+    (void)delta;
+
+    PackedByteArray frame;
+    bool            update = false;
+
+    {
+        std::lock_guard<std::mutex> lock(frame_mutex);
+        if (has_pending_frame) {
+            frame           = pending_frame;
+            has_pending_frame = false;
+            update          = true;
+        }
+    }
+
+    if (!update || frame.is_empty() || width <= 0 || height <= 0) {
+        return;
+    }
+
+    Ref<Image> img = Image::create_from_data(
+        width, height, false, Image::FORMAT_RGBA8, frame);
+
+    RenderingServer::get_singleton()->texture_2d_update(texture_rid, img, 0);
 }
-
-
 
 // ========= 输入事件 =========
 void MoonlightStream::send_mouse_button_event(int button, bool pressed) {
