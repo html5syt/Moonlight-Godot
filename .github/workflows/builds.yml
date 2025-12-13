@@ -117,7 +117,7 @@ jobs:
           PLATFORM=${{ matrix.target.platform }}
           if [ "$PLATFORM" == "windows" ]; then
           export OPENSSL_ROOT_DIR="C:\Program Files\OpenSSL"
-            OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL scons target=${{ matrix.target-type }} \
+            OPENSSL_ROOT_DIR="C:\Program Files\OpenSSL" scons target=${{ matrix.target-type }} \
                 platform=${{ matrix.target.platform }} \
                 arch=$ARCH \
                 precision=${{ matrix.float-precision }} \

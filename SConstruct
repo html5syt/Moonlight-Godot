@@ -187,9 +187,9 @@ elif platform == "android":
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
         "-DUSE_MBEDTLS=ON",
         "-B", static_build_dir,
-        f"-DCMAKE_TOOLCHAIN_FILE={ndk_root}/build/cmake/android.toolchain.cmake",
+        # f"-DCMAKE_TOOLCHAIN_FILE={ndk_root}/build/cmake/android.toolchain.cmake",
         f"-DANDROID_ABI={android_abi}",
-        "-DANDROID_PLATFORM=24",  # 最低 API，根据需要调整
+        "-DANDROID_PLATFORM=21",  # 最低 API，根据需要调整
         "-DANDROID_STL=c++_shared"
     ]
 
