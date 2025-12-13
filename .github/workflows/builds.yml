@@ -47,8 +47,38 @@ jobs:
         with:
           python-version: '3.x'
       - run: pip install scons requests
+
+      - name: Install MbedTLS (Linux/macOS)
+        if: ${{ matrix.target.platform != 'windows' }}
+        run: |
+          if [[ "${{ matrix.target.platform }}" == "linux" ]]; then
+            sudo apt-get update && sudo apt-get install -y libmbedtls-dev
+          elif [[ "${{ matrix.target.platform }}" == "web" ]]; then
+            sudo apt-get update && sudo apt-get install -y libmbedtls-dev
+          elif [[ "${{ matrix.target.platform }}" == "android" ]]; then
+            sudo apt-get update && sudo apt-get install -y libmbedtls-dev
+          elif [[ "${{ matrix.target.platform }}" == "macos" ]]; then
+            brew install mbedtls
+          elif [[ "${{ matrix.target.platform }}" == "ios" ]]; then
+            brew install mbedtls
+          fi
+
+      # Add linux x86_32 toolchain
+      - name: Install multilib support
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_32' }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
+
+      - name: Install OpenSSL for Windows
+        if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
+        shell: pwsh
+        run: |
+          $url = "https://slproweb.com/download/Win64OpenSSL-1_1_1w.exe"
+          Invoke-WebRequest -Uri $url -OutFile openssl.exe
+          Start-Process -FilePath .\openssl.exe -ArgumentList "/silent","/verysilent" -Wait
+          echo "OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL-Win64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
       
-      # --- Setup godot-cpp (prebuilt lib) ---
+          # --- Setup godot-cpp (prebuilt lib) ---
       # 此步骤由用户提供，用于安装工具链和 godot-cpp 预编译库
       - name: Setup godot-cpp (Toolchain/SDKs)
         uses: ./src/lib/godot-cpp/.github/actions/setup-godot-cpp
