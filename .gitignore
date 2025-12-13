@@ -61,3 +61,8 @@ compile_commands.json
 cmake-build*
 CMakeUserPresets.json
 build/*
+
+src/lib/ffmpeg/*
+
+bin/*
+demo/addons/moonlight-godot/bin/*

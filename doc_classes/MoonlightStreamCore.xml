@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<class name="MoonlightStreamCore" inherits="Node" version="4.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		Moonlight 串流协议的 C++ 核心实现，负责低层连接、FFmpeg 解码和资源管理。
+	</brief_description>
+	<description>
+		[MoonlightStreamCore] 是 [MoonlightStream] 节点的 C++ 后端实现，它直接与 [url=https://github.com/moonlight-stream/moonlight-common-c]Moonlight Common C[/url] 库交互，处理视频帧和音频样本的接收与解码。
+		
+		该类管理 FFmpeg 编解码器上下文、SWS/SWRESample 上下文、内部视频渲染 [SubViewport] 以及音频 [AudioStreamGenerator] 资源。
+		
+		连接和解码过程在单独的线程中运行，并通过 [method call_deferred] 和信号与 Godot 主线程安全通信。
+		
+		[b]注意：[/b] 此类主要供上层 [MoonlightStream] 节点内部使用，通常不直接在 GDScript 中实例化或操作。
+	</description>
+
+	<signals>
+		<signal name="connection_status_changed">
+			<argument index="0" name="status" type="int" />
+			<description>
+				当连接状态发生变化时发出。状态码对应 Limelight 协议中的连接状态常量。
+			</description>
+		</signal>
+		<signal name="error_occurred">
+			<argument index="0" name="message" type="String" />
+			<description>
+				在连接或解码过程中发生致命错误时发出。消息包含错误详情。
+			</description>
+		</signal>
+		<signal name="stream_started">
+			<description>
+				流媒体成功初始化并开始接收视频和音频数据时发出。
+			</description>
+		</signal>
+		<signal name="stream_stopped">
+			<description>
+				流媒体连接关闭，资源清理完成时发出。
+			</description>
+		</signal>
+	</signals>
+
+	<methods>
+		<method name="start_connection">
+			<return type="void" />
+			<argument index="0" name="address" type="String" />
+			<argument index="1" name="config" type="Dictionary" />
+			<description>
+				启动与指定主机的 Moonlight 串流连接。
+				
+				[code]config[/code] 字典应包含串流所需的配置参数，例如分辨率、帧率、比特率、Codec、应用 ID 等。
+			</description>
+		</method>
+		
+		<method name="stop_connection">
+			<return type="void" />
+			<description>
+				停止当前的串流连接并清理所有资源，包括 FFmpeg 上下文。
+			</description>
+		</method>
+		
+		<method name="get_video_viewport" qualifiers="const">
+			<return type="SubViewport" />
+			<description>
+				获取内部用于视频渲染的 [SubViewport] 节点。
+				
+				[SubViewport] 的 [Texture] 可用于 [TextureRect] 或其他需要视频纹理的节点。
+			</description>
+		</method>
+		
+		<method name="get_audio_generators" qualifiers="const">
+			<return type="Array" />
+			<description>
+				获取用于音频输出的 [AudioStreamGenerator] 数组。
+				
+				每个元素对应一个音频通道的生成器。上层节点（如 [MoonlightStream]）应将它们分配给 [AudioStreamPlayer] 节点。
+			</description>
+		</method>
+		
+		<method name="set_audio_playback">
+			<return type="void" />
+			<argument index="0" name="channel_idx" type="int" />
+			<argument index="1" name="playback" type="AudioStreamGeneratorPlayback" />
+			<description>
+				将激活的 [AudioStreamGeneratorPlayback] 对象绑定到特定的音频通道。
+				
+				这是 C++ Core 接收音频解码数据后，用于向 Godot 音频系统推送样本的关键接口。
+			</description>
+		</method>
+	</methods>
+
+	<members>
+		<member name="is_streaming" type="bool" setter="" getter="" default="false">
+			表示当前是否处于活动串流状态的原子布尔值。
+		</member>
+	</members>
+</class>

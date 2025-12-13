@@ -1,4 +1,4 @@
-name: Build Moonlight GDExtension (CMake + SCons)
+name: Build Moonlight GDExtension (FFmpeg Static)
 
 on:
   push:
@@ -12,97 +12,84 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        target-type: [template_release, template_debug]
         target:
-          [
-            { platform: linux, arch: x86_64, os: ubuntu-22.04 },
-            # { platform: linux, arch: x86_32, os: ubuntu-22.04 },
-            { platform: linux, arch: arm64, os: ubuntu-22.04-arm },
-            # { platform: linux, arch: arm32, os: ubuntu-22.04-arm },
-            { platform: windows, arch: x86_64, os: windows-latest },
-            # { platform: windows, arch: x86_32, os: windows-latest },
-            # { platform: windows, arch: arm64, os: windows-latest },
-            # { platform: macos, arch: universal, os: macos-latest },
-            { platform: android, arch: x86_64, os: ubuntu-22.04 },
-            # { platform: android, arch: x86_32, os: ubuntu-22.04 },
-            # { platform: android, arch: arm64, os: ubuntu-22.04 },  # Not supported yet because of arm64 runner not support to build moonlight-common-c
-            # { platform: android, arch: arm32, os: ubuntu-22.04 },
-            # { platform: ios, arch: arm64, os: macos-latest },
-            { platform: web, arch: wasm32, os: ubuntu-22.04 },
-          ]
-        use_mbedtls: [false]
-        target-type: [template_debug, template_release]
+          # 桌面平台
+          - { platform: linux, arch: x86_64, os: ubuntu-22.04, ffmpeg_arch: linux64 }
+          - { platform: linux, arch: arm64, os: ubuntu-22.04-arm, ffmpeg_arch: linuxarm64 } 
+          - { platform: windows, arch: x86_64, os: windows-latest, ffmpeg_arch: win64 }
+          - { platform: macos, arch: arm64, os: macos-latest, ffmpeg_arch: linuxarm64 }
+          # --- 移动平台 ---
+          # Android 构建通常在 ubuntu-22.04 上进行交叉编译
+          - { platform: android, arch: arm64, os: ubuntu-22.04, ffmpeg_arch: linuxarm64 }
+          - { platform: android, arch: x86_64, os: ubuntu-22.04, ffmpeg_arch: linux64 }
+          # iOS 构建必须在 macos-latest 上进行
+          - { platform: ios, arch: arm64, os: macos-latest, ffmpeg_arch: linuxarm64 } 
         float-precision: [single]
-
+        use_mbedtls: [false]
 
     runs-on: ${{ matrix.target.os }}
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: recursive 
 
-      # --- Install deps ---
-      - name: Install MbedTLS (Linux/macOS)
-        if: ${{ matrix.target.platform != 'windows' }}
-        run: |
-          if [[ "${{ matrix.target.platform }}" == "linux" ]]; then
-            sudo apt-get update && sudo apt-get install -y libmbedtls-dev
-          elif [[ "${{ matrix.target.platform }}" == "web" ]]; then
-            sudo apt-get update && sudo apt-get install -y libmbedtls-dev
-          elif [[ "${{ matrix.target.platform }}" == "android" ]]; then
-            sudo apt-get update && sudo apt-get install -y libmbedtls-dev
-          elif [[ "${{ matrix.target.platform }}" == "macos" ]]; then
-            brew install mbedtls
-          elif [[ "${{ matrix.target.platform }}" == "ios" ]]; then
-            brew install mbedtls
-          fi
-      # Add linux x86_32 toolchain
-      - name: Install multilib support
-        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_32' }}
-        run: |
-          sudo apt-get update && sudo apt-get install -y gcc-multilib g++-multilib
-
-      - name: Install OpenSSL for Windows
-        if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
-        shell: pwsh
-        run: |
-          $url = "https://slproweb.com/download/Win64OpenSSL-1_1_1w.exe"
-          Invoke-WebRequest -Uri $url -OutFile openssl.exe
-          Start-Process -FilePath .\openssl.exe -ArgumentList "/silent","/verysilent" -Wait
-          echo "OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL-Win64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
-
+      # --- 依赖安装 (保持原逻辑，并适配移动平台) ---
+      # ⚠️ 注意：此处的 MbedTLS 安装依赖于您的 godot-cpp/moonlight-common-c 配置。
+      # 必须确保 godot-cpp setup action 及其它步骤已正确安装 Android/iOS 工具链和依赖。
+      - name: Setup Python & Install SCons
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install scons requests
+      
       # --- Setup godot-cpp (prebuilt lib) ---
-      - name: Setup godot-cpp
+      # 此步骤由用户提供，用于安装工具链和 godot-cpp 预编译库
+      - name: Setup godot-cpp (Toolchain/SDKs)
         uses: ./src/lib/godot-cpp/.github/actions/setup-godot-cpp
         with:
           platform: ${{ matrix.target.platform }}
-          em-version: 3.1.62
+          em-version: 3.1.62 # 保持原样
 
-      # --- Build with SCons (which calls CMake internally) ---
+      # --- 使用 ffmpeg-down.py 下载和安装 FFmpeg ---
+      - name: Download and Install FFmpeg Static Libs
+        run: |
+          FFMPEG_ARCH=${{ matrix.target.ffmpeg_arch }}
+          TARGET_DIR="lib/ffmpeg/$FFMPEG_ARCH"
+          
+          echo "Downloading FFmpeg for $FFMPEG_ARCH to $TARGET_DIR"
+          
+          # ❗️ 重要提示：对于 Android/iOS，BtbN 不提供现成的静态库。
+          # 您可能需要将此步骤替换为使用自定义脚本或 pre-built artifacts 
+          # 来放置对应平台的 FFmpeg 静态库到 $TARGET_DIR 中。
+          python ffmpeg-down.py $FFMPEG_ARCH $TARGET_DIR
+
+          # 验证下载结果
+          if [ ! -d "$TARGET_DIR/lib" ] || [ ! -d "$TARGET_DIR/include" ]; then
+              echo "Error: FFmpeg libraries not found in expected path: $TARGET_DIR"
+              exit 1
+          fi
+
+      # --- Build with SCons (统一构建步骤) ---
       - name: Build GDExtension
-        if: ${{ matrix.target.platform != 'windows'}}
         shell: sh
         run: |
-          scons \
-            target=${{ matrix.target-type }} \
-            platform=${{ matrix.target.platform }} \
-            arch=${{ matrix.target.arch }} \
-            precision=${{ matrix.float-precision }} \
-            use_mbedtls=${{ matrix.use_mbedtls }}
+          # SCons 的 arch 参数
+          ARCH=${{ matrix.target.arch }}
+          if [ "$ARCH" == "universal" ]; then
+            ARCH="x86_64" 
+          fi
 
-      # --- Build with SCons (which calls CMake internally) ---
-      - name: Build GDExtension (Windows)
-        shell: sh
-        if: ${{ matrix.target.platform == 'windows' && matrix.use_mbedtls == false }}
-        run: |
-          export OPENSSL_ROOT_DIR="C:\Program Files\OpenSSL"
-          OPENSSL_ROOT_DIR="C:\Program Files\OpenSSL" scons \
-            target=${{ matrix.target-type }} \
-            platform=${{ matrix.target.platform }} \
-            arch=${{ matrix.target.arch }} \
-            precision=${{ matrix.float-precision }} \
-            use_mbedtls=${{ matrix.use_mbedtls }}
+          scons target=${{ matrix.target-type }} \
+                platform=${{ matrix.target.platform }} \
+                arch=$ARCH \
+                precision=${{ matrix.float-precision }} \
+                use_mbedtls=${{ matrix.use_mbedtls }}
 
       # --- Upload artifact ---
       - name: Upload Artifact
@@ -110,6 +97,7 @@ jobs:
         with:
           name: moonlight-gdext-${{ matrix.target.platform }}-${{ matrix.target.arch }}-${{ matrix.target-type }}-${{ matrix.use_mbedtls }}
           path: bin/
+
 
   merge:
     runs-on: ubuntu-22.04
