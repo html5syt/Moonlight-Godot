@@ -168,9 +168,6 @@ elif platform == "macos":
             sys.exit("Static build failed")
             
 elif platform == "android":
-    ndk_root = os.environ.get("ANDROID_NDK_ROOT")
-    if not ndk_root:
-      sys.exit("ERROR: ANDROID_NDK_ROOT must be set for Android builds.")
 
     # 根据 arch 映射 ABI
     abi_map = {
@@ -182,14 +179,18 @@ elif platform == "android":
     android_abi = abi_map.get(arch)
     if not android_abi:
         sys.exit(f"Unsupported Android arch: {arch}")
+    if "arm" in android_abi:
+        ndk_root = os.environ.get("ANDROID_NDK_ROOT")
+        if not ndk_root:
+            sys.exit("ERROR: ANDROID_NDK_ROOT must be set for Android builds.")
+        cmake_base_args += [f"-DCMAKE_TOOLCHAIN_FILE={ndk_root}/build/cmake/android.toolchain.cmake"]
 
     cmake_base_args += [
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
         "-DUSE_MBEDTLS=ON",
         "-B", static_build_dir,
-        # f"-DCMAKE_TOOLCHAIN_FILE={ndk_root}/build/cmake/android.toolchain.cmake",
         f"-DANDROID_ABI={android_abi}",
-        "-DANDROID_PLATFORM=21",  # 最低 API，根据需要调整
+        "-DANDROID_PLATFORM=24",  # 最低 API，根据需要调整
         "-DANDROID_STL=c++_shared"
     ]
 
@@ -426,7 +427,7 @@ def copy_ffmpeg_dlls(to_bin = False):
         # # 确保目标部署路径存在
         # env.Execute(Mkdir(str(FFMPEG_DLL_DST_DIR))) 
         FFMPEG_DLL_DST_DIR = f"{projectdir}/addons/{libname}/bin/{platform}" if not to_bin else f"/bin"
-        print(f"安装 FFmpeg 动态库到 {FFMPEG_DLL_DST_DIR}")
+        print(f"[INFO]Copying FFmpeg DLLs to: {FFMPEG_DLL_DST_DIR}")
         
         # env.Install() 负责将文件拷贝到指定目录，并确保其依赖于构建目标
         install_targets = env.Install(
