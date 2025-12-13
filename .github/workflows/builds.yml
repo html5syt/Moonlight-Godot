@@ -91,8 +91,8 @@ jobs:
         shell: sh
         run: |
           FFMPEG_ARCH=${{ matrix.target.ffmpeg_arch }}
-          TARGET_DIR="lib/ffmpeg/$FFMPEG_ARCH"
-          PYTHONIOENCODING=utf-8
+          TARGET_DIR="src/lib/ffmpeg/$FFMPEG_ARCH"
+          set PYTHONIOENCODING=utf-8
           echo "Downloading FFmpeg for $FFMPEG_ARCH to $TARGET_DIR"
           # ❗️ 重要提示：对于 Android/iOS，BtbN 不提供现成的静态库。
           # 您可能需要将此步骤替换为使用自定义脚本或 pre-built artifacts 

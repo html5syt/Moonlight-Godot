@@ -105,7 +105,7 @@ if platform == "windows":
 elif platform == "ios":
     cmake_base_args += [
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-        # "-DUSE_MBEDTLS=ON",  # 强制
+        "-DUSE_MBEDTLS=ON",  # 强制
         "-B", static_build_dir
     ]
     
@@ -133,7 +133,7 @@ elif platform == "macos":
                 f"-DCMAKE_BUILD_TYPE={build_type}",
                 "-DBUILD_SHARED_LIBS=OFF",
                 "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-                # "-DUSE_MBEDTLS=ON",
+                "-DUSE_MBEDTLS=ON",
                 f"-DCMAKE_OSX_ARCHITECTURES={subarch}",
             ]
             ret = subprocess.run(cmake_args, env=os.environ)
@@ -167,9 +167,9 @@ elif platform == "macos":
             sys.exit("Static build failed")
             
 elif platform == "android":
-    # ndk_root = os.environ.get("ANDROID_NDK_ROOT")
-    # if not ndk_root:
-    #   sys.exit("ERROR: ANDROID_NDK_ROOT must be set for Android builds.")
+    ndk_root = os.environ.get("ANDROID_NDK_ROOT")
+    if not ndk_root:
+      sys.exit("ERROR: ANDROID_NDK_ROOT must be set for Android builds.")
 
     # 根据 arch 映射 ABI
     abi_map = {
@@ -186,7 +186,7 @@ elif platform == "android":
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
         "-DUSE_MBEDTLS=ON",
         "-B", static_build_dir,
-        # f"-DCMAKE_TOOLCHAIN_FILE={ndk_root}/build/cmake/android.toolchain.cmake",
+        f"-DCMAKE_TOOLCHAIN_FILE={ndk_root}/build/cmake/android.toolchain.cmake",
         f"-DANDROID_ABI={android_abi}",
         "-DANDROID_PLATFORM=21",  # 最低 API，根据需要调整
         "-DANDROID_STL=c++_shared"

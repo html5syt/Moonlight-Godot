@@ -103,9 +103,9 @@ def download_file(url, filename):
                     if chunk:
                         dl += len(chunk)
                         f.write(chunk)
-                        done = int(50 * dl / total_length)
-                        sys.stdout.write(f"\r[{'=' * done}{' ' * (50-done)}] {dl/1024/1024:.2f} MB")
-                        sys.stdout.flush()
+                        # done = int(50 * dl / total_length)
+                        # sys.stdout.write(f"\r[{'=' * done}{' ' * (50-done)}] {dl/1024/1024:.2f} MB")
+                        # sys.stdout.flush()
     print("\n下载完成。")
 
 def extract_and_install(archive_path, target_output_dir):
