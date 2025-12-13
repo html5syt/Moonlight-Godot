@@ -88,18 +88,18 @@ jobs:
 
       # --- 使用 ffmpeg-down.py 下载和安装 FFmpeg ---
       - name: Download and Install FFmpeg Static Libs
+        shell: sh
         run: |
           FFMPEG_ARCH=${{ matrix.target.ffmpeg_arch }}
           TARGET_DIR="lib/ffmpeg/$FFMPEG_ARCH"
-          
+          PYTHONIOENCODING=utf-8
           echo "Downloading FFmpeg for $FFMPEG_ARCH to $TARGET_DIR"
-          
           # ❗️ 重要提示：对于 Android/iOS，BtbN 不提供现成的静态库。
           # 您可能需要将此步骤替换为使用自定义脚本或 pre-built artifacts 
           # 来放置对应平台的 FFmpeg 静态库到 $TARGET_DIR 中。
           python ffmpeg-down.py $FFMPEG_ARCH $TARGET_DIR
-
-          # 验证下载结果
+          
+          ls $TARGET_DIR          # 验证下载结果
           if [ ! -d "$TARGET_DIR/lib" ] || [ ! -d "$TARGET_DIR/include" ]; then
               echo "Error: FFmpeg libraries not found in expected path: $TARGET_DIR"
               exit 1

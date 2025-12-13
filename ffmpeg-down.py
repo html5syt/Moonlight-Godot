@@ -7,6 +7,8 @@ import zipfile
 import tarfile
 import tempfile
 from pathlib import Path
+import time 
+
 
 # GITHUB API URL 保持不变
 GITHUB_API_URL = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest"
@@ -39,21 +41,42 @@ def get_platform_key(target_platform=None):
     sys.exit(1)
 
 
+
 def get_download_url(platform_key):
     """
-    从 GitHub API 获取对应平台的下载链接。
+    从 GitHub API 获取对应平台的下载链接，并在失败时无限次、间隔 5 秒重试。
     """
     print(f"正在获取最新 Release 信息 (目标平台: {platform_key})...")
-    try:
-        response = requests.get(GITHUB_API_URL)
-        response.raise_for_status()
-        data = response.json()
-    except Exception as e:
-        print(f"获取 API 失败: {e}")
-        sys.exit(1)
+
+    # === 新增重试逻辑 ===
+    while True:
+        try:
+            # 尝试发送请求
+            response = requests.get(GITHUB_API_URL)
+            
+            # 检查 HTTP 状态码 (200, 300, 400, 500 等)
+            response.raise_for_status() 
+            
+            # 如果请求成功且状态码在 200-300 之间，解析 JSON
+            data = response.json()
+            
+            # 成功获取并解析，跳出重试循环
+            break 
+
+        except requests.exceptions.RequestException as e:
+            # 捕获所有由 requests 引起的错误，包括网络连接问题和非 2xx 状态码
+            print(f"获取 API 失败（网络或HTTP错误）: {e}。5秒后重试...")
+            time.sleep(5)
+            continue # 继续下一次循环重试
+        except Exception as e:
+            # 捕获其他非网络错误，例如 JSON 解析错误
+            print(f"处理 API 响应时发生非网络错误: {e}。5秒后重试...")
+            time.sleep(5)
+            continue # 继续下一次循环重试
+    # === 结束重试逻辑 ===
+
 
     # 目标文件名特征: ffmpeg-master-latest-{platform}-gpl-shared
-    # 保持原脚本逻辑，搜索 shared 版本
     search_str = f"ffmpeg-master-latest-{platform_key}-gpl-shared"
     
     for asset in data.get('assets', []):

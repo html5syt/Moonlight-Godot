@@ -290,9 +290,7 @@ if FFMPEG_LIB_FULL_PATH.is_dir():
     if platform == 'linux':
         env.Append(LINKFLAGS=['-static-libgcc', '-static-libstdc++'])
 else:
-    # 仅在非 CI 环境发出警告，避免 CI 失败
-    if os.environ.get('CI') != 'true':
-        print_error(f"Warning: FFmpeg headers or libs not found in: {FFMPEG_LIB_DIR}")
+    print_error(f"Warning: FFmpeg headers or libs not found in: {FFMPEG_LIB_DIR}")
 
 # ==================================
 
@@ -406,7 +404,7 @@ def copy_ffmpeg_dlls(to_bin = False):
             "swscale-*.dll"
         ]
         dll_sources = []
-        print(f"!!!!!FFmpeg DLLs to be copied: {dll_patterns}")
+        print(f"[INFO]FFmpeg DLLs to be copied: {dll_patterns}")
         for pattern in dll_patterns:
             # 使用 SCons 的 Glob 函数查找文件
             dll_sources.extend(Glob(str(FFMPEG_DLL_SRC_DIR / pattern)))
@@ -421,7 +419,7 @@ def copy_ffmpeg_dlls(to_bin = False):
         
     else:
         dll_sources = []
-    print(f"FFmpeg DLLs to be copied: {dll_sources}")
+    print(f"[INFO]FFmpeg DLLs to be copied: {dll_sources}")
     # 4. 执行拷贝
     if dll_sources:
         # # 确保目标部署路径存在
