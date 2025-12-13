@@ -21,7 +21,7 @@ jobs:
           # - { platform: macos, arch: arm64, os: macos-latest, ffmpeg_arch: linuxarm64 }
           # --- 移动平台 ---
           # Android 构建通常在 ubuntu-22.04 上进行交叉编译
-          - { platform: android, arch: arm64, os: ubuntu-22.04, ffmpeg_arch: linuxarm64 }
+          - { platform: android, arch: arm64, os: ubuntu-24.04-arm, ffmpeg_arch: linuxarm64 }
           - { platform: android, arch: x86_64, os: ubuntu-22.04, ffmpeg_arch: linux64 }
           # iOS 构建必须在 macos-latest 上进行
           # - { platform: ios, arch: arm64, os: macos-latest, ffmpeg_arch: linuxarm64 } 
