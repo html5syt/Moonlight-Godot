@@ -184,7 +184,7 @@ elif platform == "android":
 
     cmake_base_args += [
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-        "-DUSE_MBEDTLS=ON",
+        # "-DUSE_MBEDTLS=ON",
         "-B", static_build_dir,
         f"-DCMAKE_TOOLCHAIN_FILE={ndk_root}/build/cmake/android.toolchain.cmake",
         f"-DANDROID_ABI={android_abi}",

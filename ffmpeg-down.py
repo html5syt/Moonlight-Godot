@@ -28,7 +28,7 @@ def get_platform_key(target_platform=None):
     # ... (此处省略了自动检测逻辑，因为在 CI 中会传入参数)
     # ... (如果您需要完整的自动检测逻辑，请保留原脚本中的代码)
     
-    print(f"警告: 未指定平台参数，使用自动检测: {system}/{machine}")
+    print(f"Warning: If platform parameters are not specified, use automatic detection: {system}/{machine}")
     
     # 以下为简化的自动检测部分
     os_str = 'win' if system == 'windows' else ('linux' if system == 'linux' else '')
@@ -37,8 +37,9 @@ def get_platform_key(target_platform=None):
     if os_str and arch_str:
         return f"{os_str}{arch_str}"
     
-    print(f"错误: 无法自动确定平台。请手动指定 (如 win64)")
+    print(f"Error: Cannot automatically determine platform. Please specify manually (e.g. win64)")
     sys.exit(1)
+
 
 
 
@@ -46,7 +47,7 @@ def get_download_url(platform_key):
     """
     从 GitHub API 获取对应平台的下载链接，并在失败时无限次、间隔 5 秒重试。
     """
-    print(f"正在获取最新 Release 信息 (目标平台: {platform_key})...")
+    print(f"The latest Release information is being obtained (Target platform:{platform_key})...")
 
     # === 新增重试逻辑 ===
     while True:
@@ -65,12 +66,12 @@ def get_download_url(platform_key):
 
         except requests.exceptions.RequestException as e:
             # 捕获所有由 requests 引起的错误，包括网络连接问题和非 2xx 状态码
-            print(f"获取 API 失败（网络或HTTP错误）: {e}。5秒后重试...")
+            print(f"Failed to obtain API (network or HTTP error) : {e}. Try again in 5 seconds...")
             time.sleep(5)
             continue # 继续下一次循环重试
         except Exception as e:
             # 捕获其他非网络错误，例如 JSON 解析错误
-            print(f"处理 API 响应时发生非网络错误: {e}。5秒后重试...")
+            print(f"Failed to parse API response: {e}. Try again in 5 seconds...")
             time.sleep(5)
             continue # 继续下一次循环重试
     # === 结束重试逻辑 ===
@@ -82,15 +83,15 @@ def get_download_url(platform_key):
     for asset in data.get('assets', []):
         name = asset['name']
         if search_str in name:
-            print(f"找到匹配资源: {name}")
+            print(f"Find the matching resource: {name}")
             return asset['browser_download_url'], name
             
-    print(f"错误: 未找到匹配 {platform_key} 平台的 master shared 版本。")
+    print(f"Error: The master shared version matching the {platform_key} platform was not found.")
     sys.exit(1)
 
 def download_file(url, filename):
     """下载文件并显示进度"""
-    print(f"开始下载: {filename} ...")
+    print(f"Start downloading {filename} ...")
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
         total_length = int(r.headers.get('content-length', 0))
@@ -106,13 +107,13 @@ def download_file(url, filename):
                         # done = int(50 * dl / total_length)
                         # sys.stdout.write(f"\r[{'=' * done}{' ' * (50-done)}] {dl/1024/1024:.2f} MB")
                         # sys.stdout.flush()
-    print("\n下载完成。")
+    print("\nDownload completed.")
 
 def extract_and_install(archive_path, target_output_dir):
     """解压并移动 include 和 lib 文件夹到指定的 target_output_dir"""
     temp_dir = Path(tempfile.mkdtemp())
     target_path = Path(target_output_dir) # 使用传入的参数作为目标路径
-    print(f"正在解压到临时目录: {temp_dir} ...")
+    print(f"Decompressing to temporary directory: {temp_dir} ...")
 
     try:
         # 1. 解压
@@ -131,7 +132,7 @@ def extract_and_install(archive_path, target_output_dir):
                 break
         
         if not extracted_root:
-            print("错误: 无法在压缩包中找到根目录结构。")
+            print("Error: The root directory structure cannot be found in the compressed package.")
             return
 
         # 3. 移动 include 和 lib
@@ -147,15 +148,15 @@ def extract_and_install(archive_path, target_output_dir):
             dst_path = target_path / folder
             
             if src_path.exists():
-                print(f"移动 {folder} -> {dst_path}")
+                print(f"Move {folder} -> {dst_path}")
                 shutil.copytree(src_path, dst_path)
             else:
-                print(f"警告: 压缩包中未找到 {folder} 文件夹")
+                print(f"Warning: The {folder} folder is not found in the compressed package.")
 
-        print(f"解压安装完成，文件位于: {target_path.absolute()}")
+        print(f"Decompression and installation completed, files are located in: {target_path.absolute()}")
 
     except Exception as e:
-        print(f"解压过程中出错: {e}")
+        print(f"Decompression error: {e}")
     finally:
         # 清理临时目录
         shutil.rmtree(temp_dir)
@@ -163,8 +164,8 @@ def extract_and_install(archive_path, target_output_dir):
 def main():
     # 检查命令行参数数量
     if len(sys.argv) < 3:
-        print("用法: python ffmpeg-down.py <platform_key> <target_output_dir>")
-        print("示例: python ffmpeg-down.py win64 lib/ffmpeg/win64")
+        print("Usage: python ffmpeg-down.py <platform_key> <target_output_dir>")
+        print("Example: python ffmpeg-down.py win64 lib/ffmpeg/win64")
         sys.exit(1)
         
     manual_platform = sys.argv[1] # 第一个参数是平台 key
@@ -180,7 +181,7 @@ def main():
     finally:
         # 删除下载的压缩包
         if os.path.exists(filename):
-            print("正在清理下载的压缩包...")
+            print("Cleaning up downloaded archive...")
             os.remove(filename)
 
 if __name__ == "__main__":
