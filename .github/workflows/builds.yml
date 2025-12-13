@@ -18,13 +18,13 @@ jobs:
           - { platform: linux, arch: x86_64, os: ubuntu-22.04, ffmpeg_arch: linux64 }
           - { platform: linux, arch: arm64, os: ubuntu-22.04-arm, ffmpeg_arch: linuxarm64 } 
           - { platform: windows, arch: x86_64, os: windows-latest, ffmpeg_arch: win64 }
-          # - { platform: macos, arch: arm64, os: macos-latest, ffmpeg_arch: linuxarm64 }
+          - { platform: macos, arch: arm64, os: macos-latest, ffmpeg_arch: linuxarm64 }
           # --- 移动平台 ---
           # Android 构建通常在 ubuntu-22.04 上进行交叉编译
           - { platform: android, arch: arm64, os: ubuntu-22.04, ffmpeg_arch: linuxarm64 }
           - { platform: android, arch: x86_64, os: ubuntu-22.04, ffmpeg_arch: linux64 }
           # iOS 构建必须在 macos-latest 上进行
-          # - { platform: ios, arch: arm64, os: macos-latest, ffmpeg_arch: linuxarm64 } 
+          - { platform: ios, arch: arm64, os: macos-latest, ffmpeg_arch: linuxarm64 } 
         float-precision: [single]
         use_mbedtls: [false]
 
@@ -48,15 +48,15 @@ jobs:
           python-version: '3.x'
       - run: pip install scons requests
 
-      - name: Install MbedTLS (Linux/macOS)
+      - name: Install MbedTLS&Openssl
         if: ${{ matrix.target.platform != 'windows' }}
         run: |
           if [[ "${{ matrix.target.platform }}" == "linux" ]]; then
-            sudo apt-get update && sudo apt-get install -y libmbedtls-dev
+            sudo apt-get update && sudo apt-get install -y libmbedtls-dev libssl-dev
           elif [[ "${{ matrix.target.platform }}" == "web" ]]; then
-            sudo apt-get update && sudo apt-get install -y libmbedtls-dev
+            sudo apt-get update && sudo apt-get install -y libmbedtls-dev libssl-dev
           elif [[ "${{ matrix.target.platform }}" == "android" ]]; then
-            sudo apt-get update && sudo apt-get install -y libmbedtls-dev
+            sudo apt-get update && sudo apt-get install -y libmbedtls-dev libssl-dev
           elif [[ "${{ matrix.target.platform }}" == "macos" ]]; then
             brew install mbedtls
           elif [[ "${{ matrix.target.platform }}" == "ios" ]]; then
@@ -113,6 +113,10 @@ jobs:
           ARCH=${{ matrix.target.arch }}
           if [ "$ARCH" == "universal" ]; then
             ARCH="x86_64" 
+          fi
+          PLATFORM=${{ matrix.target.platform }}
+          if [ "$PLATFORM" == "windows" ]; then
+            set OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL
           fi
 
           scons target=${{ matrix.target-type }} \
